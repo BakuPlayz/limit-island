@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 286" width="780" height="286" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" role="img" aria-label="Legend explaining what each ring state in Limit Island means: the arc shows remaining quota, it turns yellow below 50 percent and red below 10 percent, an em dash means no reading, and the number alternates with a reset countdown.">
+  <title>How to read a Limit Island ring</title>
+
+  <!-- Self-contained dark card: the page behind this can be any colour, so the
+       legend carries its own background rather than relying on the reader's
+       GitHub theme. It also matches the black the app actually draws. -->
+  <rect x="0" y="0" width="780" height="286" rx="16" fill="#0B0D10"/>
+
+  <!-- ── section 1: what the arc and colour mean ─────────────────────────── -->
+  <text x="28" y="40" fill="#E6EDF3" font-size="14" font-weight="700">The arc is what is <tspan fill="#7EE2B8">left</tspan>, not what you have used</text>
+
+  <!-- 85% · provider colour (Codex mint). r=15, circumference 94.25 -->
+  <g transform="translate(88,104)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#59F0BD" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="80.1 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">85<tspan font-size="8">%</tspan></text>
+  </g>
+
+  <!-- 70% · provider colour (Claude orange) -->
+  <g transform="translate(228,104)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#F59457" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="66.0 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">70<tspan font-size="8">%</tspan></text>
+  </g>
+
+  <!-- under 50% · yellow -->
+  <g transform="translate(368,104)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#E3B341" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="30.2 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">32<tspan font-size="8">%</tspan></text>
+  </g>
+
+  <!-- under 10% · red -->
+  <g transform="translate(508,104)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#F85149" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="6.6 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">7<tspan font-size="8">%</tspan></text>
+  </g>
+
+  <!-- no reading -->
+  <g transform="translate(648,104)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">—</text>
+  </g>
+
+  <g font-size="12.5" text-anchor="middle">
+    <text x="88"  y="146" fill="#E6EDF3" font-weight="600">Plenty left</text>
+    <text x="88"  y="164" fill="#8B949E" font-size="11.5">provider colour</text>
+    <text x="228" y="146" fill="#E6EDF3" font-weight="600">Plenty left</text>
+    <text x="228" y="164" fill="#8B949E" font-size="11.5">provider colour</text>
+    <text x="368" y="146" fill="#E6EDF3" font-weight="600">Below 50%</text>
+    <text x="368" y="164" fill="#8B949E" font-size="11.5">turns yellow</text>
+    <text x="508" y="146" fill="#E6EDF3" font-weight="600">Below 10%</text>
+    <text x="508" y="164" fill="#8B949E" font-size="11.5">turns red</text>
+    <text x="648" y="146" fill="#E6EDF3" font-weight="600">No reading</text>
+    <text x="648" y="164" fill="#8B949E" font-size="11.5">not signed in yet</text>
+  </g>
+
+  <line x1="28" y1="192" x2="752" y2="192" stroke="#21262D" stroke-width="1"/>
+
+  <!-- ── section 2: the alternation ──────────────────────────────────────── -->
+  <text x="28" y="220" fill="#E6EDF3" font-size="14" font-weight="700">The number alternates with the reset countdown</text>
+
+  <g transform="translate(88,254)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#F59457" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="66.0 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">70<tspan font-size="8">%</tspan></text>
+  </g>
+  <text x="118" y="250" fill="#E6EDF3" font-size="12.5" font-weight="600">5 seconds</text>
+  <text x="118" y="266" fill="#8B949E" font-size="11.5">quota remaining in this window</text>
+
+  <text x="378" y="260" fill="#6E7681" font-size="17" text-anchor="middle">⇄</text>
+
+  <g transform="translate(448,254)">
+    <circle r="15" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2.6"/>
+    <circle r="15" fill="none" stroke="#F59457" stroke-width="2.6" stroke-linecap="round"
+            stroke-dasharray="66.0 94.25" transform="rotate(-90)"/>
+    <text y="4" text-anchor="middle" fill="#FFFFFF" font-size="12.5" font-weight="700"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace">3h</text>
+  </g>
+  <text x="478" y="250" fill="#E6EDF3" font-size="12.5" font-weight="600">2 seconds</text>
+  <text x="478" y="266" fill="#8B949E" font-size="11.5">time until the window resets</text>
+</svg>

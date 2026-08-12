@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="936" viewBox="0 0 1320 936" role="img" aria-labelledby="title desc">
+  <title id="title">Limit Island Accounts settings with fictional demonstration accounts</title>
+  <desc id="desc">A privacy-safe illustration of the Accounts window. Personal Codex and Studio Claude are left of the notch; Sandbox Gemini is right of the notch.</desc>
+  <rect width="1320" height="936" fill="#000"/>
+  <rect x="94" y="64" width="1132" height="808" rx="32" fill="#202526" stroke="#5e6668" stroke-width="2"/>
+  <path d="M94 126h1132" stroke="#363c3e" stroke-width="2"/>
+  <circle cx="124" cy="95" r="13" fill="#ff5f57"/><circle cx="162" cy="95" r="13" fill="#555c5f"/><circle cx="200" cy="95" r="13" fill="#555c5f"/>
+  <text x="238" y="104" fill="#d9dddd" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25" font-weight="700">Limit Island Settings</text>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+    <text x="142" y="216" fill="#f1f3f3" font-size="47" font-weight="700">Accounts</text>
+    <text x="142" y="278" fill="#aeb5b6" font-size="20">Each account gets its own ring. Choose which side of the notch it sits on and drag to reorder.</text>
+
+    <text x="142" y="348" fill="#f1f3f3" font-size="25" font-weight="700">Left of notch</text>
+    <g transform="translate(142 382)">
+      <circle cx="27" cy="27" r="27" fill="#ecf1f0"/><text x="27" y="36" text-anchor="middle" fill="#1d2425" font-size="22" font-weight="800">C</text>
+      <text x="82" y="25" fill="#f1f3f3" font-size="25" font-weight="700">Personal</text>
+      <text x="82" y="51" fill="#aeb5b6" font-size="18">Demo account · Last read now</text>
+      <rect x="828" y="5" width="218" height="50" rx="10" fill="#363b3d"/>
+      <rect x="828" y="5" width="109" height="50" rx="10" fill="#0a84ff"/>
+      <text x="882" y="38" text-anchor="middle" fill="#fff" font-size="20" font-weight="700">Left</text><text x="991" y="38" text-anchor="middle" fill="#e4e7e7" font-size="20" font-weight="700">Right</text>
+    </g>
+    <g transform="translate(142 462)">
+      <circle cx="27" cy="27" r="27" fill="#f59057"/><text x="27" y="36" text-anchor="middle" fill="#25170f" font-size="22" font-weight="800">A</text>
+      <text x="82" y="25" fill="#f1f3f3" font-size="25" font-weight="700">Studio</text>
+      <text x="82" y="51" fill="#aeb5b6" font-size="18">Demo account · Sign in required</text>
+      <rect x="828" y="5" width="218" height="50" rx="10" fill="#363b3d"/>
+      <rect x="828" y="5" width="109" height="50" rx="10" fill="#0a84ff"/>
+      <text x="882" y="38" text-anchor="middle" fill="#fff" font-size="20" font-weight="700">Left</text><text x="991" y="38" text-anchor="middle" fill="#e4e7e7" font-size="20" font-weight="700">Right</text>
+    </g>
+
+    <text x="142" y="590" fill="#f1f3f3" font-size="25" font-weight="700">Right of notch</text>
+    <g transform="translate(142 624)">
+      <circle cx="27" cy="27" r="27" fill="#69a9ff"/><text x="27" y="36" text-anchor="middle" fill="#102039" font-size="22" font-weight="800">G</text>
+      <text x="82" y="25" fill="#f1f3f3" font-size="25" font-weight="700">Sandbox</text>
+      <text x="82" y="51" fill="#aeb5b6" font-size="18">Demo account · Last read now</text>
+      <rect x="828" y="5" width="218" height="50" rx="10" fill="#363b3d"/>
+      <rect x="937" y="5" width="109" height="50" rx="10" fill="#0a84ff"/>
+      <text x="882" y="38" text-anchor="middle" fill="#e4e7e7" font-size="20" font-weight="700">Left</text><text x="991" y="38" text-anchor="middle" fill="#fff" font-size="20" font-weight="700">Right</text>
+    </g>
+
+    <rect x="142" y="733" width="218" height="52" rx="11" fill="#3b4244"/><text x="166" y="767" fill="#f1f3f3" font-size="22">Add account…</text><path d="M327 753l8 8 8-8" fill="none" stroke="#f1f3f3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="142" y="830" fill="#aeb5b6" font-size="17">Demo image: fictional names and status values. No credentials or account data are shown.</text>
+  </g>
+</svg>

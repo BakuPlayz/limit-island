@@ -1,0 +1,343 @@
+import Foundation
+import Testing
+@testable import LimitIsland
+
+@MainActor
+@Suite("Session tracking")
+struct SessionStoreTests {
+    private func event(
+        _ name: String,
+        session: String = "s1",
+        payload: [String: Any] = [:],
+        cli: String = "claude"
+    ) throws -> HookEvent {
+        var body = payload
+        body["session_id"] = session
+        let frame: [String: Any] = [
+            "event": name,
+            "cli": cli,
+            "payload": body,
+            "env": ["TERM_PROGRAM": "iTerm.app"],
+            "pids": [1],
+            "tty": "/dev/ttys001",
+            "sentAt": 0
+        ]
+        let data = try JSONSerialization.data(withJSONObject: frame)
+        return try JSONDecoder().decode(HookEvent.self, from: data)
+    }
+
+    /// Waits for a card, then waits out `PendingRequest.minimumDeliberationTime`.
+    ///
+    /// Answering a card the instant it appears is refused by design — see
+    /// `minimumDeliberation` for why — so any test that means to press a button has
+    /// to be as slow as a person.
+    private func awaitAnswerableCard(in store: SessionStore) async throws -> PendingRequest {
+        while store.pending.isEmpty { await Task.yield() }
+        let request = store.pending[0]
+        try await Task.sleep(for: .milliseconds(Int(PendingRequest.minimumDeliberationTime * 1000) + 80))
+        return request
+    }
+
+    @Test("A session appears, gains a prompt, runs a tool, and finishes")
+    func lifecycle() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+
+        _ = await store.handle(try event("SessionStart", payload: ["cwd": "/Users/me/Code/thing"]))
+        #expect(store.sessions.count == 1)
+        #expect(store.sessions[0].project == "thing")
+
+        _ = await store.handle(try event("UserPromptSubmit", payload: ["prompt": "fix the auth bug in middleware"]))
+        #expect(store.sessions[0].title == "fix the auth bug in middleware")
+        #expect(store.sessions[0].activity == .thinking)
+
+        _ = await store.handle(try event("PreToolUse", payload: [
+            "tool_name": "Edit",
+            "tool_input": ["file_path": "/Users/me/Code/thing/src/middleware.ts"]
+        ]))
+        #expect(store.sessions[0].activity == .running("Editing middleware.ts"))
+
+        _ = await store.handle(try event("Stop"))
+        #expect(store.sessions[0].activity == .done)
+
+        _ = await store.handle(try event("SessionEnd"))
+        #expect(store.sessions.isEmpty)
+    }
+
+    @Test("The most recently active session is listed first")
+    func ordering() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+
+        _ = await store.handle(try event("SessionStart", session: "a"))
+        _ = await store.handle(try event("SessionStart", session: "b"))
+        #expect(store.sessions.map(\.id) == ["b", "a"])
+
+        _ = await store.handle(try event("UserPromptSubmit", session: "a", payload: ["prompt": "hello"]))
+        #expect(store.sessions.map(\.id) == ["a", "b"])
+    }
+
+    @Test("A tool outside the matcher is reported but never intercepted")
+    func matcherScoping() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+
+        let (reply, _) = await store.handle(try event("PreToolUse", payload: [
+            "tool_name": "Read",
+            "tool_input": ["file_path": "/tmp/x.txt"]
+        ]))
+        // No opinion means Claude Code's own permission flow runs untouched, which
+        // is the whole reason the matcher exists.
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("Auto-accept mode is left alone", arguments: [
+        ("acceptEdits", "Edit"),
+        ("acceptEdits", "Write"),
+        ("bypassPermissions", "Edit"),
+        ("bypassPermissions", "Bash")
+    ])
+    func autoModeIsNotIntercepted(mode: String, tool: String) async throws {
+        // Someone running in auto-accept has already answered the question the card
+        // would ask. Putting one in front of them would be worse than not running.
+        let store = SessionStore()
+        let (reply, _) = await store.handle(try event("PreToolUse", payload: [
+            "tool_name": tool,
+            "permission_mode": mode,
+            "tool_input": ["file_path": "/x/a.ts", "command": "ls"]
+        ]))
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+        // It is still reported — the point is not to hide the session, only to stop
+        // asking about it.
+        #expect(store.sessions.count == 1)
+    }
+
+    @Test("acceptEdits still stops for a command")
+    func acceptEditsDoesNotCoverBash() async throws {
+        // `acceptEdits` accepts edits. A shell command is not an edit, and Claude
+        // Code would still prompt for it, so the notch should still offer to.
+        let store = SessionStore()
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash",
+                "permission_mode": "acceptEdits",
+                "tool_input": ["command": "rm -rf build"]
+            ]))
+        }
+        while store.pending.isEmpty { await Task.yield() }
+        #expect(store.pending[0].tool == "Bash")
+        store.stop()
+        _ = await pending.value
+    }
+
+    @Test("Plan mode surfaces the plan and nothing else")
+    func planMode() async throws {
+        let store = SessionStore()
+        let (reply, _) = await store.handle(try event("PreToolUse", payload: [
+            "tool_name": "Edit",
+            "permission_mode": "plan",
+            "tool_input": ["file_path": "/x/a.ts"]
+        ]))
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("A decision too fast to be human is refused, and the card stays up")
+    func minimumDeliberation() async throws {
+        // The reason this exists: a card once resolved itself with the pointer in
+        // the opposite corner of the screen and nothing typed. Whatever produced
+        // that, it was not someone reading a diff.
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash",
+                "tool_input": ["command": "rm -rf build"]
+            ]))
+        }
+        while store.pending.isEmpty { await Task.yield() }
+        let request = store.pending[0]
+
+        store.allow(request)
+        #expect(!request.isResolved, "a decision inside the deliberation window must not take")
+        #expect(store.pending.count == 1, "and the card must stay up rather than strand the CLI")
+
+        // After the window, the same press works.
+        try await Task.sleep(for: .milliseconds(Int(PendingRequest.minimumDeliberationTime * 1000) + 120))
+        store.allow(request)
+        let (reply, _) = await pending.value
+        #expect(reply.decision == .allow)
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("Deferring is never rate-limited")
+    func deferralIsImmediate() async throws {
+        // Handing a decision back is always safe, and delaying it would hold up a
+        // CLI that is waiting on us for no benefit.
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash", "tool_input": ["command": "ls"]
+            ]))
+        }
+        while store.pending.isEmpty { await Task.yield() }
+        store.stop()
+        let (reply, _) = await pending.value
+        #expect(reply.decision == nil)
+    }
+
+    @Test("The current process is recognised as alive")
+    func processLiveness() {
+        #expect(TerminalDiscovery.isProcessAlive(getpid()))
+    }
+
+    @Test("A Codex transcript builds a session without any hook")
+    func codexFromTranscript() {
+        let store = SessionStore()
+        func apply(_ record: CodexRolloutParser.Record) {
+            store.apply(.init(sessionID: "cx", record: record, workingDirectory: "/Users/me/Code/thing"))
+        }
+        apply(.started(sessionID: "cx", workingDirectory: "/Users/me/Code/thing"))
+        #expect(store.sessions.count == 1)
+        #expect(store.sessions[0].provider == .openAI)
+        #expect(store.sessions[0].project == "thing")
+
+        apply(.prompt("optimise the queries"))
+        #expect(store.sessions[0].title == "optimise the queries")
+
+        apply(.activity("Running npm test"))
+        #expect(store.sessions[0].activity == .running("Running npm test"))
+
+        apply(.turnCompleted)
+        #expect(store.sessions[0].activity == .done)
+    }
+
+    @Test("A chosen terminal destination is remembered only on its live session")
+    func remembersTerminalDestination() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart", session: "a"))
+        let destination = TerminalDestination(
+            kind: .ghostty, stableID: "one", terminalName: "Ghostty",
+            title: "tab", workingDirectory: "/tmp/project"
+        )
+        store.selectDestination(destination, for: "a")
+        #expect(store.session(id: "a")?.selectedDestination == destination)
+        store.removeSession("a")
+        #expect(store.session(id: "a") == nil)
+    }
+
+    @Test("Sessions waiting on the user sort above the rest")
+    func waitingSortsFirst() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart", session: "a"))
+        _ = await store.handle(try event("SessionStart", session: "b"))
+        _ = await store.handle(try event("Notification", session: "a", payload: ["message": "needs you"]))
+        // `b` is more recent, but `a` is the one that cannot continue without you.
+        #expect(store.sessions.first?.id == "a")
+        #expect(store.isWaitingOnUser)
+    }
+
+    @Test("A notification says the CLI is waiting rather than leaving it looking stalled")
+    func notificationSurfaces() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart"))
+        _ = await store.handle(try event("Notification", payload: ["message": "Claude needs your permission to use Bash"]))
+        #expect(store.sessions[0].activity == .waitingInTerminal("Claude needs your permission to use Bash"))
+        #expect(store.sessions[0].activity.isWaiting)
+    }
+
+    @Test("Stopping the app releases anything still waiting, rather than hanging an agent")
+    func stopReleasesPending() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash",
+                "tool_input": ["command": "rm -rf build"]
+            ]))
+        }
+        // Let the handler reach the point of publishing a card.
+        while store.pending.isEmpty { await Task.yield() }
+        #expect(store.sessions.first?.activity == .awaitingDecision)
+
+        store.stop()
+        let (reply, _) = await pending.value
+        // Never a denial on the way out: the CLI must be free to ask for itself.
+        #expect(reply.decision == nil)
+    }
+
+    @Test("Allowing resolves the card exactly once")
+    func allowResolves() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash",
+                "tool_input": ["command": "npm test"]
+            ]))
+        }
+        let request = try await awaitAnswerableCard(in: store)
+        store.allow(request)
+        // A second answer must be ignored rather than resuming the continuation
+        // twice, which would trap.
+        store.deny(request)
+
+        let (reply, reason) = await pending.value
+        #expect(reply.decision == .allow)
+        #expect(reason == "Approved from Limit Island")
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("Answering in the terminal drops the card instead of leaving it up")
+    func postToolUseClearsTheCard() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+
+        let pending = Task {
+            await store.handle(try! self.event("PreToolUse", payload: [
+                "tool_name": "Bash",
+                "tool_input": ["command": "npm test"]
+            ]))
+        }
+        while store.pending.isEmpty { await Task.yield() }
+
+        _ = await store.handle(try event("PostToolUse", payload: ["tool_name": "Bash"]))
+        let (reply, _) = await pending.value
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+    }
+}
+
+@Suite("Tool descriptions")
+struct ToolSummaryTests {
+    private func input(_ members: [String: JSONValue]) -> JSONValue { .object(members) }
+
+    @Test("Common tools read as sentences, and paths shorten to their name")
+    func activityText() {
+        #expect(ToolSummary.activity(tool: "Edit", input: input(["file_path": .string("/a/b/middleware.ts")])) == "Editing middleware.ts")
+        #expect(ToolSummary.activity(tool: "Write", input: input(["file_path": .string("/a/b/new.swift")])) == "Writing new.swift")
+        #expect(ToolSummary.activity(tool: "Bash", input: input(["command": .string("npm test")])) == "Running npm test")
+        #expect(ToolSummary.activity(tool: "TodoWrite", input: nil) == "Updating its plan")
+    }
+
+    @Test("An unknown tool falls back to its own name rather than a guess")
+    func unknownTool() {
+        #expect(ToolSummary.activity(tool: "mcp__weather__forecast", input: nil) == "mcp__weather__forecast")
+    }
+
+    @Test("A long command is truncated instead of overflowing the row")
+    func truncation() {
+        let long = String(repeating: "x", count: 200)
+        let summary = ToolSummary.activity(tool: "Bash", input: input(["command": .string(long)]))
+        #expect(summary.count < 50)
+        #expect(summary.hasSuffix("…"))
+    }
+}
