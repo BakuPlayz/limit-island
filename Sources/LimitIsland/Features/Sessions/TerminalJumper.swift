@@ -107,7 +107,8 @@ enum TerminalJumper {
         return keys
     }
     static func jump(to session: AgentSession) -> JumpResolution {
-        guard let terminal = session.terminal else { return .stale }
+        guard let rawTerminal = session.terminal else { return .stale }
+        let terminal = TerminalDiscovery.enriched(rawTerminal)
 
         if let chosen = session.selectedDestination {
             return jump(to: chosen, fallback: terminal)

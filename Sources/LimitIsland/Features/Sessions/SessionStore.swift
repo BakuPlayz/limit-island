@@ -458,7 +458,7 @@ final class SessionStore {
     // MARK: - Session bookkeeping
 
     private func touch(_ event: HookEvent, id: String) {
-        let terminal = TerminalRef(event: event)
+        let terminal = TerminalDiscovery.enriched(TerminalRef(event: event))
         if let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].lastEventAt = .now
             // The terminal is re-sent on every event, which is what keeps a session
@@ -468,7 +468,7 @@ final class SessionStore {
                 sessions[index].project = (directory as NSString).lastPathComponent
             }
             reorder()
-            coalesceSessions(preferredID: id)
+            if event.provider == .openAI { coalesceSessions(preferredID: id) }
             return
         }
         sessions.insert(
@@ -484,7 +484,7 @@ final class SessionStore {
             ),
             at: 0
         )
-        coalesceSessions(preferredID: id)
+        if event.provider == .openAI { coalesceSessions(preferredID: id) }
     }
 
     /// Coalesces only exact runtime identities. Matching titles or projects are

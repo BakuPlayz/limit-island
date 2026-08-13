@@ -41,6 +41,14 @@ enum TerminalDiscovery {
                            agentPID: process.pid, pids: chain)
     }
 
+    static func enriched(_ terminal: TerminalRef) -> TerminalRef {
+        guard terminal.tty == nil, let pid = terminal.agentPID,
+              let tty = processRows().first(where: { $0.pid == pid })?.tty else { return terminal }
+        var result = terminal
+        result.tty = tty
+        return result
+    }
+
     /// Startup replay gate. Prefer the UUID visible in a `codex resume` command;
     /// otherwise accept only a single live Codex process in the rollout's cwd.
     static func hasLiveCodexRollout(_ url: URL) -> Bool {
