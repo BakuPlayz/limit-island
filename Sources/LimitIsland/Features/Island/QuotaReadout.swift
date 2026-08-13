@@ -82,13 +82,13 @@ struct QuotaReadout: View {
 
         HStack(spacing: 4) {
             if reversed {
-                if resetAt != nil { reset(resetAt, urgent: urgent, tone: tone) }
+                reset(resetAt, window: window, urgent: urgent, tone: tone)
                 percentage(remaining, urgent: urgent, tone: tone)
                 period(window)
             } else {
                 period(window)
                 percentage(remaining, urgent: urgent, tone: tone)
-                if resetAt != nil { reset(resetAt, urgent: urgent, tone: tone) }
+                reset(resetAt, window: window, urgent: urgent, tone: tone)
             }
         }
     }
@@ -105,8 +105,8 @@ struct QuotaReadout: View {
             .foregroundStyle(urgent ? tone.opacity(0.55) : tone)
     }
 
-    private func reset(_ resetAt: Date?, urgent: Bool, tone: Color) -> some View {
-        Text(ResetCountdown.compact(resetAt))
+    private func reset(_ resetAt: Date?, window: QuotaWindow, urgent: Bool, tone: Color) -> some View {
+        Text(resetAt.map(ResetCountdown.compact) ?? window.shortTitle)
             .font(.system(size: 9.5, weight: .bold, design: .monospaced))
             .foregroundStyle(urgent ? tone : .white.opacity(0.7))
     }
