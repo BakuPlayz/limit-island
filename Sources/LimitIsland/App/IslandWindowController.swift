@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Combine
 import SwiftUI
 
@@ -36,7 +37,7 @@ private final class NeverKeyPanel: NSPanel {
 /// The panel is non-activating and, since a card once answered itself, explicitly
 /// never key. That is what lets someone answer a permission request without their
 /// editor losing focus. Nothing here may call `makeKeyAndOrderFront`; see
-/// `handleKey` for how shortcuts reach a window that is never key.
+/// `handleHotKey` for how shortcuts reach a window that is never key.
 @MainActor
 final class IslandWindowController: NSObject {
     private let quota: QuotaStore
@@ -50,7 +51,14 @@ final class IslandWindowController: NSObject {
     /// fought the hardware: the pointer's path to the strip runs through the camera
     /// housing, which cannot be hovered, so opening it was a matter of luck.
     private var isOpen = false
-    private var keyMonitor: Any?
+    /// Actual rendered state. This can be true while `isOpen` is false when an
+    /// interaction expanded the panel automatically.
+    private var isExpanded = false
+    /// Waiting rows the person explicitly collapsed. Removed as soon as a session
+    /// resumes, so a later request from the same session can surface normally.
+    private var dismissedWaitingSessionIDs: Set<String> = []
+    private var hotKeyHandler: EventHandlerRef?
+    private var hotKeys: [EventHotKeyRef?] = []
     /// Installed only while the panel is open, so a click anywhere else closes it.
     private var outsideClickMonitor: Any?
 
@@ -103,7 +111,7 @@ final class IslandWindowController: NSObject {
         switch TerminalJumper.jump(to: session) {
         case .jumped:
             presenter.jumpSheet = nil
-            setOpen(false)
+            collapse()
         case let .choose(destinations):
             presenter.jumpSheet = .chooser(sessionID: session.id, destinations: destinations)
             setOpen(true)
@@ -115,7 +123,7 @@ final class IslandWindowController: NSObject {
             setOpen(true)
         case .applicationFallback:
             presenter.jumpSheet = nil
-            setOpen(false)
+            collapse()
         case .stale:
             // Navigation failure is not session lifecycle. Keep the idle row even
             // when neither a tab nor an application can currently be resolved.
@@ -131,8 +139,10 @@ final class IslandWindowController: NSObject {
     /// Called on termination. The key monitor is a process-wide registration, so it
     /// is given up explicitly rather than left to deallocation.
     func stop() {
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        keyMonitor = nil
+        for hotKey in hotKeys { if let hotKey { UnregisterEventHotKey(hotKey) } }
+        hotKeys.removeAll()
+        if let hotKeyHandler { RemoveEventHandler(hotKeyHandler) }
+        hotKeyHandler = nil
         if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
         outsideClickMonitor = nil
     }
@@ -150,10 +160,13 @@ final class IslandWindowController: NSObject {
         withObservationTracking {
             _ = sessions.sessions.count
             _ = sessions.pending.count
+            _ = sessions.codexQuestions.count
             _ = presenter.jumpSheet
+            _ = presenter.interactionHeight
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.position()
+                self?.syncHotKeys()
                 self?.observeSessions()
             }
         }
@@ -165,15 +178,28 @@ final class IslandWindowController: NSObject {
     /// records intent and lets a `Task` reach the window on a later turn — see the
     /// note on the class for why touching geometry inline was a crash.
     private func toggle() {
-        setOpen(!isOpen)
+        if isExpanded { collapse() } else { setOpen(true) }
     }
 
     private func setOpen(_ open: Bool) {
         guard open != isOpen else { return }
         // A card is a question that has to be answered. Clicking away must not
         // dismiss it — only answering it, or its own timeout, takes it off screen.
-        if !open, !sessions.pending.isEmpty { return }
+        if !open, sessions.activeInteraction != nil { return }
         isOpen = open
+        updateOutsideClickMonitor()
+        Task { @MainActor [weak self] in self?.position() }
+    }
+
+    /// Collapse requests must reposition even when the panel was auto-expanded and
+    /// the user-open flag was already false. That mismatch previously left a done
+    /// session panel stuck on screen.
+    private func collapse() {
+        guard sessions.activeInteraction == nil else { return }
+        dismissedWaitingSessionIDs.formUnion(
+            sessions.sessions.lazy.filter { $0.activity.isWaiting }.map(\.id)
+        )
+        isOpen = false
         updateOutsideClickMonitor()
         Task { @MainActor [weak self] in self?.position() }
     }
@@ -186,7 +212,7 @@ final class IslandWindowController: NSObject {
             outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown]
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.setOpen(false) }
+                Task { @MainActor [weak self] in self?.collapse() }
             }
         } else if !isOpen, let monitor = outsideClickMonitor {
             NSEvent.removeMonitor(monitor)
@@ -202,7 +228,11 @@ final class IslandWindowController: NSObject {
         // Open because the person asked, or because an agent is waiting on them.
         // The second half is the "it should still open if it needs input" rule: a
         // question surfaces itself rather than waiting to be discovered.
-        let wantsExpansion = isOpen || !sessions.pending.isEmpty || sessions.isWaitingOnUser
+        let waitingIDs = Set(sessions.sessions.lazy.filter { $0.activity.isWaiting }.map(\.id))
+        dismissedWaitingSessionIDs.formIntersection(waitingIDs)
+        let hasUndismissedWaiting = !waitingIDs.subtracting(dismissedWaitingSessionIDs).isEmpty
+        let wantsExpansion = isOpen || !sessions.pending.isEmpty || hasUndismissedWaiting
+        isExpanded = wantsExpansion
 
         guard let leftArea = screen.auxiliaryTopLeftArea,
               let rightArea = screen.auxiliaryTopRightArea else {
@@ -223,8 +253,9 @@ final class IslandWindowController: NSObject {
         if wantsExpansion {
             let height = presenter.headerHeight + NotchLayout.panelHeight(
                 sessions: contentRowCount,
-                cards: sessions.pending.count,
-                headerHeight: presenter.headerHeight
+                cards: sessions.waitingInteractionCount > 0 ? 1 : 0,
+                headerHeight: presenter.headerHeight,
+                cardHeight: presenter.interactionHeight > 0 ? presenter.interactionHeight : nil
             )
             // Reuse the closed strip's exact horizontal frame. Expansion is a
             // vertical reveal below the notch, never a sideways jump to a second
@@ -285,8 +316,9 @@ final class IslandWindowController: NSObject {
         let height = expanded
             ? presenter.headerHeight + NotchLayout.panelHeight(
                 sessions: contentRowCount,
-                cards: sessions.pending.count,
-                headerHeight: presenter.headerHeight
+                cards: sessions.waitingInteractionCount > 0 ? 1 : 0,
+                headerHeight: presenter.headerHeight,
+                cardHeight: presenter.interactionHeight > 0 ? presenter.interactionHeight : nil
               )
             : presenter.headerHeight + 8
         return NSRect(
@@ -301,7 +333,7 @@ final class IslandWindowController: NSObject {
         switch presenter.jumpSheet {
         case let .chooser(_, destinations): max(2, destinations.count + 1)
         case .automation, .setup, .notice: 2
-        case nil: sessions.sessions.count
+        case nil: sessions.activeInteraction == nil ? sessions.sessions.count : 0
         }
     }
 
@@ -329,8 +361,9 @@ final class IslandWindowController: NSObject {
     // MARK: - Keyboard
 
     /// The panel never becomes key, so SwiftUI's `.keyboardShortcut` never fires.
-    /// A global monitor sees the keystroke wherever the person is actually typing,
-    /// which is the point: answering without leaving the editor.
+    /// Carbon hot keys see the chord wherever the person is actually typing without
+    /// requiring Input Monitoring access. `NSEvent` global monitors silently stop
+    /// receiving key events when that privacy permission is absent.
     ///
     /// It is deliberately **not** bound to ⌘Y and ⌘N. A global monitor fires for
     /// every application, and those two are already taken: ⌘Y is Redo in a number
@@ -339,24 +372,70 @@ final class IslandWindowController: NSObject {
     /// the person never looked at — which is exactly the failure this feature must
     /// not have. Adding Control makes the chord one nothing else claims.
     private func installKeyMonitor() {
-        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            Task { @MainActor [weak self] in self?.handleKey(event) }
+        var type = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+            guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            var identifier = EventHotKeyID()
+            let status = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID), nil,
+                MemoryLayout<EventHotKeyID>.size, nil, &identifier
+            )
+            guard status == noErr else { return status }
+            let controller = Unmanaged<IslandWindowController>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in controller.handleHotKey(identifier.id) }
+            return noErr
+        }, 1, &type, context, &hotKeyHandler)
+
+        syncHotKeys()
+    }
+
+    /// Register only while an interaction is visible. Carbon hot keys consume the
+    /// chord, so leaving them installed while idle would steal it from other apps.
+    private func syncHotKeys() {
+        for hotKey in hotKeys { if let hotKey { UnregisterEventHotKey(hotKey) } }
+        hotKeys.removeAll()
+        guard sessions.activeInteraction != nil else { return }
+
+        let bindings: [(UInt32, UInt32)] = [
+            (1, UInt32(kVK_ANSI_Y)), (2, UInt32(kVK_ANSI_N)),
+            (11, UInt32(kVK_ANSI_1)), (12, UInt32(kVK_ANSI_2)),
+            (13, UInt32(kVK_ANSI_3)), (14, UInt32(kVK_ANSI_4))
+        ]
+        let modifiers = UInt32(cmdKey | controlKey)
+        for (id, keyCode) in bindings {
+            var reference: EventHotKeyRef?
+            let identifier = EventHotKeyID(signature: 0x4C49534C, id: id) // LISL
+            if RegisterEventHotKey(
+                keyCode, modifiers, identifier, GetApplicationEventTarget(), 0, &reference
+            ) == noErr {
+                hotKeys.append(reference)
+            }
         }
     }
 
-    private func handleKey(_ event: NSEvent) {
-        // Only while a card is up. A monitor that acted at any other time would be
-        // a keylogger's worth of surprise.
-        guard let request = sessions.pending.first else { return }
-        let required: NSEvent.ModifierFlags = [.command, .control]
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.isSuperset(of: required), !flags.contains(.option) else { return }
+    private func handleHotKey(_ id: UInt32) {
+        // Only the visible FIFO interaction owns these registered chords.
+        if (11...14).contains(id), let shortcut = presenter.questionShortcut {
+            shortcut(Int(id - 11))
+            return
+        }
 
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "y":
+        // A queued request that is not visible must never be answerable by a global
+        // shortcut. In particular, a Codex question may be older than a Claude
+        // permission card even though both are waiting.
+        guard case let .pending(request)? = sessions.activeInteraction else { return }
+
+        switch id {
+        case 1:
             Log.hooks.debug("shortcut: allow")
             sessions.allow(request)
-        case "n":
+        case 2:
             Log.hooks.debug("shortcut: deny")
             sessions.deny(request)
         default:

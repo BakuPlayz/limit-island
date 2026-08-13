@@ -488,7 +488,10 @@ struct DiffView: View {
             }
             .padding(.vertical, 4)
         }
-        .frame(maxHeight: 140)
+        // Keep the decision controls visible without losing access to a long diff.
+        // The diff owns this compact scroll viewport; the card's actions remain
+        // immediately below it instead of being pushed off the panel.
+        .frame(maxHeight: 82)
         .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .bottomTrailing) {
             Text("+\(added) −\(removed)")

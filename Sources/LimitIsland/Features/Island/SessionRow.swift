@@ -65,19 +65,18 @@ struct SessionRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: onJump) {
-            HStack(spacing: 9) {
-                SessionDot(session: session, size: 8)
-                    .padding(.leading, 2)
+        HStack(spacing: 9) {
+            SessionDot(session: session, size: 8)
+                .padding(.leading, 2)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .islandFont(size: 12, weight: .semibold)
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     if let detail = session.activity.detail {
                         Text(detail)
-                            .font(.system(size: 10.5))
+                            .islandFont(size: 10.5)
                             .foregroundStyle(detailColor)
                             .lineLimit(1)
                     }
@@ -94,23 +93,28 @@ struct SessionRow: View {
                     .foregroundStyle(.white.opacity(0.45))
                     .frame(width: 30, alignment: .trailing)
                 Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 10, weight: .semibold))
+                    .islandFont(size: 10, weight: .semibold)
                     .foregroundStyle(.white.opacity(0.55))
-            }
-            .padding(.horizontal, 12)
-            // The card's outer vertical padding is part of the shared row budget.
-            .frame(height: NotchLayout.rowHeight - 4)
-            .frame(maxWidth: .infinity)
-            .background(
-                isHovered ? Color.white.opacity(0.14) : Color(red: 0.15, green: 0.16, blue: 0.18),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        // The card's outer vertical padding is part of the shared row budget.
+        .frame(height: NotchLayout.rowHeight - 4)
+        .frame(maxWidth: .infinity)
+        .background(
+            isHovered ? Color.white.opacity(0.14) : Color(red: 0.15, green: 0.16, blue: 0.18),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
+        // Put the hit shape after padding so the complete visible row, including
+        // its breathing room, navigates. A zero-distance DragGesture competed with
+        // the surrounding ScrollView and often never delivered its mouse-up.
+        .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .onTapGesture(perform: onJump)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onJump() }
         .help("Jump to this session in \(session.terminal?.displayName ?? "its terminal")")
     }
 
@@ -125,7 +129,7 @@ struct SessionRow: View {
 
     private func badge(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 9.5, weight: .medium))
+            .islandFont(size: 9.5, weight: .medium)
             .foregroundStyle(.white.opacity(0.72))
             .padding(.horizontal, 6)
             .padding(.vertical, 2.5)

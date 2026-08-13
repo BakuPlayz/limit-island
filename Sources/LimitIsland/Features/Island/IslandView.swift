@@ -57,10 +57,16 @@ enum NotchLayout {
     }
 
     /// Expanded height below the top band, for a given number of sessions and cards.
-    static func panelHeight(sessions: Int, cards: Int, headerHeight: CGFloat) -> CGFloat {
-        let rows = CGFloat(max(sessions, 1)) * rowHeight
-        let cardSpace = CGFloat(cards) * 168
-        return min(maximumPanelHeight, headerHeight + rows + cardSpace + 12)
+    static func panelHeight(
+        sessions: Int, cards: Int, headerHeight: CGFloat, cardHeight: CGFloat? = nil
+    ) -> CGFloat {
+        // Interaction mode hides the session list, so its size must not grow with
+        // the number of rows sitting behind the active card.
+        let rows = cards > 0 ? 0 : CGFloat(max(sessions, 1)) * rowHeight + 16
+        // Start at a useful card size, then follow SwiftUI's actual measurement.
+        // Exceptionally long cards stop at the ceiling and scroll.
+        let cardSpace = cards > 0 ? max(180, cardHeight ?? 260) : 0
+        return min(maximumPanelHeight - headerHeight, rows + cardSpace)
     }
 }
 

@@ -32,13 +32,35 @@ struct NotchLayoutTests {
         let small = NotchLayout.panelHeight(sessions: 1, cards: 0, headerHeight: header)
         let larger = NotchLayout.panelHeight(sessions: 4, cards: 0, headerHeight: header)
         #expect(small < larger)
-        #expect(NotchLayout.panelHeight(sessions: 200, cards: 5, headerHeight: header) == NotchLayout.maximumPanelHeight)
+        #expect(NotchLayout.panelHeight(sessions: 200, cards: 1, headerHeight: header, cardHeight: 1_000) == NotchLayout.maximumPanelHeight - header)
     }
 
     @Test("An empty panel still has room for its empty state")
     func emptyPanelHasHeight() {
         let header = NotchLayout.minimumHeaderHeight
-        #expect(NotchLayout.panelHeight(sessions: 0, cards: 0, headerHeight: header) >= header + NotchLayout.rowHeight)
+        #expect(NotchLayout.panelHeight(sessions: 0, cards: 0, headerHeight: header) == NotchLayout.rowHeight + 16)
+    }
+
+    @Test("Normal content height excludes the separately rendered header")
+    func headerIsNotDoubleCounted() {
+        let header = NotchLayout.minimumHeaderHeight
+        #expect(NotchLayout.panelHeight(sessions: 2, cards: 0, headerHeight: header) == 2 * NotchLayout.rowHeight + 16)
+        #expect(header + NotchLayout.panelHeight(sessions: 2, cards: 0, headerHeight: header) ==
+                header + 2 * NotchLayout.rowHeight + 16)
+    }
+
+    @Test("Interaction height does not depend on hidden session rows")
+    func interactionHeightIsIndependent() {
+        let header = NotchLayout.minimumHeaderHeight
+        #expect(NotchLayout.panelHeight(sessions: 1, cards: 1, headerHeight: header) ==
+                NotchLayout.panelHeight(sessions: 100, cards: 1, headerHeight: header))
+    }
+
+    @Test("Interaction height follows the measured card")
+    func measuredInteractionHeight() {
+        let header = NotchLayout.minimumHeaderHeight
+        #expect(NotchLayout.panelHeight(sessions: 10, cards: 1, headerHeight: header, cardHeight: 230) == 230)
+        #expect(NotchLayout.panelHeight(sessions: 10, cards: 1, headerHeight: header, cardHeight: 310) == 310)
     }
 }
 
