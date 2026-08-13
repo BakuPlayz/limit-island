@@ -8,9 +8,12 @@ struct PermissionCard: View {
     let onAllow: () -> Void
     let onDeny: () -> Void
     var onAnswer: ([String: String]) -> Void = { _ in }
+    var onApprovePlan: (Bool) -> Void = { _ in }
+    var onRequestChanges: (String) -> Void = { _ in }
     var onJump: () -> Void = {}
     var onQuestionState: ((Int, AgentQuestion.Item, @escaping (Int) -> Void) -> Void)? = nil
     @State private var answerReady = false
+    @State private var planStage = 0 // summary, preview, build mode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -18,7 +21,7 @@ struct PermissionCard: View {
                 Circle()
                     .fill(Color(red: 1.0, green: 0.62, blue: 0.25))
                     .frame(width: 6, height: 6)
-                Text("Permission Request")
+                Text(cardTitle)
                     .islandFont(size: 10.5, weight: .medium)
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
@@ -32,11 +35,11 @@ struct PermissionCard: View {
                     .foregroundStyle(.white.opacity(0.45))
             }
 
-            HStack(spacing: 6) {
+            if case .question = request.kind { EmptyView() } else { HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(Color(red: 1.0, green: 0.66, blue: 0.3))
-                Text(request.tool)
+                Text(humanAction)
                     .islandFont(size: 13, weight: .bold)
                     .foregroundStyle(Color(red: 1.0, green: 0.66, blue: 0.3))
                 if let target = request.target {
@@ -46,7 +49,7 @@ struct PermissionCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-            }
+            } }
 
             body(for: request.kind)
 
@@ -55,6 +58,8 @@ struct PermissionCard: View {
                     question: question, provider: request.provider,
                     isEnabled: answerReady, onSubmit: onAnswer, onState: onQuestionState
                 )
+            } else if case let .plan(markdown) = request.kind {
+                planControls(markdown)
             } else { HStack(spacing: 8) {
                 // ⌃⌘, not ⌘: these are read by a global monitor, and plain ⌘Y/⌘N
                 // are Redo and New in other apps — a stray press must not answer a
@@ -82,6 +87,62 @@ struct PermissionCard: View {
         }
     }
 
+    private var cardTitle: String {
+        switch request.kind {
+        case .question: "\(request.provider.title) asks"
+        case .plan: "Plan ready"
+        case .edit: "Review changes"
+        case .general: "Approval needed"
+        }
+    }
+
+    private var humanAction: String {
+        switch request.kind {
+        case .edit: "Edit files"
+        case .general: ToolSummary.activity(tool: request.tool, input: request.input)
+        case .plan: "Review the plan"
+        case .question: "Question"
+        }
+    }
+
+    @ViewBuilder private func planControls(_ markdown: String) -> some View {
+        if planStage == 1 {
+            ScrollView {
+                Text(PlanText.attributed(markdown)).islandFont(size: 11)
+                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }.frame(maxHeight: 210)
+        } else {
+            Text(planStage == 2 ? "How should \(request.provider.title) build it?" : "Review the plan, request changes, or start building.")
+                .islandFont(size: 12).foregroundStyle(.white.opacity(0.82))
+        }
+        if planStage == 2 {
+            HStack(spacing: 8) {
+                answerButton("Back", shortcut: "", emphasised: false) { planStage = 0 }
+                answerButton("Manual approve", shortcut: "", emphasised: false) { onApprovePlan(false) }
+                answerButton("Auto approve", shortcut: "", emphasised: true) { onApprovePlan(true) }
+            }
+        } else {
+            HStack(spacing: 8) {
+                answerButton("Deny", shortcut: "", emphasised: false) {
+                    guard let feedback = textPrompt(title: "Ask for plan changes", question: "What should the agent change?") else { return }
+                    onRequestChanges(feedback)
+                }
+                answerButton("Build it", shortcut: "", emphasised: true) { planStage = 2 }
+                answerButton(planStage == 1 ? "Hide plan" : "See plan", shortcut: "", emphasised: false) { planStage = planStage == 1 ? 0 : 1 }
+            }
+        }
+    }
+
+    private func textPrompt(title: String, question: String) -> String? {
+        let alert = NSAlert(); alert.messageText = title; alert.informativeText = question
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); alert.accessoryView = field
+        alert.addButton(withTitle: "Submit"); alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     @ViewBuilder
     private func body(for kind: PendingRequest.Kind) -> some View {
         switch kind {
@@ -92,15 +153,8 @@ struct PermissionCard: View {
                 old: request.input?.string("old_string") ?? "",
                 new: request.input?.string("new_string") ?? request.input?.string("content") ?? ""
             )
-        case let .plan(markdown):
-            ScrollView {
-                Text(PlanText.attributed(markdown))
-                    .islandFont(size: 11)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-            .frame(maxHeight: 150)
+        case .plan:
+            EmptyView()
         case .general:
             if let command = ToolSummary.command(request.input) {
                 ScrollView {
@@ -257,6 +311,7 @@ struct CodexQuestionCard: View {
     let onQuestionState: ((@escaping (Int) -> Void) -> Void)?
     @State private var index = 0
     @State private var selected: Set<Int> = []
+    @State private var planStage = 0
 
     var body: some View {
         if question.items.indices.contains(index) {
@@ -274,6 +329,22 @@ struct CodexQuestionCard: View {
                 Text(item.question)
                     .islandFont(size: 13, weight: .medium)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if isPlanExit(item) {
+                    if planStage == 0 {
+                        HStack(spacing: 8) {
+                            codexAction("Deny", false) { choose(planOption(containing: "change", in: item) ?? 2, item: item) }
+                            codexAction("Build it", true) { planStage = 1 }
+                            codexAction("See plan", false, action: onFallback)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            codexAction("Back", false) { planStage = 0 }
+                            codexAction("Manual approve", false) { choose(planOption(containing: "manual", in: item) ?? 1, item: item) }
+                            codexAction("Auto approve", true) { choose(planOption(containing: "auto", in: item) ?? 0, item: item) }
+                        }
+                    }
+                } else {
 
                 ForEach(Array(item.options.enumerated()), id: \.offset) { optionIndex, option in
                     PressSurface(isSelected: selected.contains(optionIndex), action: {
@@ -308,6 +379,7 @@ struct CodexQuestionCard: View {
                     }
                     .tint(Provider.openAI.color)
                 }
+                }
 
                 PressSurface(action: onFallback) {
                     Label("Answer in terminal", systemImage: "arrow.up.forward.app")
@@ -323,6 +395,19 @@ struct CodexQuestionCard: View {
                 publish(question.items[newIndex])
             }
         }
+    }
+
+    private func isPlanExit(_ item: AgentQuestion.Item) -> Bool {
+        item.options.contains { $0.label.localizedCaseInsensitiveContains("auto mode") } &&
+        item.options.contains { $0.label.localizedCaseInsensitiveContains("manual") }
+    }
+
+    private func planOption(containing text: String, in item: AgentQuestion.Item) -> Int? {
+        item.options.firstIndex { $0.label.localizedCaseInsensitiveContains(text) }
+    }
+
+    private func codexAction(_ title: String, _ primary: Bool, action: @escaping () -> Void) -> some View {
+        AnswerButton(title: title, shortcut: "", emphasised: primary, isEnabled: true, action: action)
     }
 
     private func choose(_ option: Int, item: AgentQuestion.Item) {

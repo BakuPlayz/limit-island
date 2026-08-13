@@ -97,6 +97,16 @@ final class PendingRequest: Identifiable {
         finish(.init(decision: .allow, updatedInput: .object(updated)), "Answered from Limit Island")
     }
 
+    func approvePlan(automatic: Bool) {
+        guard !isTooSoon else { return reject("approve plan") }
+        finish(.init(decision: .allow, updatedInput: input, updatedPermissionMode: automatic ? "acceptEdits" : "default"), "Plan approved from Limit Island")
+    }
+
+    func requestPlanChanges(_ feedback: String) {
+        guard !isTooSoon else { return reject("request plan changes") }
+        finish(.init(decision: .deny), feedback)
+    }
+
     /// Hands the decision back to the CLI's own prompt. Used on timeout, on quit,
     /// and when the person answers in the terminal instead. Never rate-limited:
     /// deferring is always safe, and delaying it would hold up a CLI.

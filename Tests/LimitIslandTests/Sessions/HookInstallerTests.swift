@@ -93,7 +93,7 @@ struct HookInstallerTests {
     func eventsAreKnown() {
         let known: Set<String> = [
             "SessionStart", "SessionEnd", "UserPromptSubmit",
-            "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop"
+            "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "SubagentStop"
         ]
         #expect(Set(HookInstaller.events).isSubset(of: known))
     }

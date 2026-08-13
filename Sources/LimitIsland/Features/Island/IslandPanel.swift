@@ -257,6 +257,8 @@ struct IslandContent: View {
                 onAllow: { sessions.allow(request) },
                 onDeny: { sessions.deny(request) },
                 onAnswer: { sessions.answer(request, answers: $0) },
+                onApprovePlan: { sessions.approvePlan(request, automatic: $0) },
+                onRequestChanges: { sessions.requestPlanChanges(request, feedback: $0) },
                 onJump: {
                     guard let session = sessions.session(id: request.sessionID) else { return }
                     onJump(session)

@@ -99,6 +99,7 @@ enum HookInstaller {
         "SessionStart",
         "UserPromptSubmit",
         "PreToolUse",
+        "PermissionRequest",
         "PostToolUse",
         "Notification",
         "Stop",
@@ -283,7 +284,7 @@ enum HookInstaller {
     // MARK: - Shapes
 
     static func matcherEntry(for event: String) -> [String: Any] {
-        let blocking = event == "PreToolUse"
+        let blocking = event == "PreToolUse" || event == "PermissionRequest"
         var entry: [String: Any] = [
             "hooks": [[
                 "type": "command",
@@ -293,7 +294,7 @@ enum HookInstaller {
         ]
         // Only the tool-scoped events take a matcher; giving one to SessionStart
         // would be meaningless and is not part of the schema.
-        if event == "PreToolUse" || event == "PostToolUse" {
+        if event == "PreToolUse" || event == "PermissionRequest" || event == "PostToolUse" {
             entry["matcher"] = "*"
         }
         return entry

@@ -128,6 +128,7 @@ struct HookReply: Sendable {
     /// permission flow runs exactly as it would without us.
     var decision: Decision?
     var updatedInput: JSONValue? = nil
+    var updatedPermissionMode: String? = nil
 
     enum Decision: String, Sendable {
         case allow
@@ -139,9 +140,12 @@ struct HookReply: Sendable {
     /// Claude Code's `PreToolUse` output shape.
     func serialised(for event: HookEvent? = nil, reason: String?) -> String {
         guard let decision else { return "{}" }
-        if event?.event == "PermissionRequest", event?.provider == .openAI {
+        if event?.event == "PermissionRequest" {
             var decisionObject: [String: Any] = ["behavior": decision.rawValue]
             if let reason { decisionObject["message"] = reason }
+            if let updatedPermissionMode {
+                decisionObject["updatedPermissions"] = [["type": "setMode", "mode": updatedPermissionMode, "destination": "session"]]
+            }
             let root: [String: Any] = ["hookSpecificOutput": [
                 "hookEventName": "PermissionRequest", "decision": decisionObject
             ]]

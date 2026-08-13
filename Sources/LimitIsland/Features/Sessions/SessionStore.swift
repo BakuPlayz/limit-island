@@ -128,7 +128,7 @@ final class SessionStore {
         case "PreToolUse":
             return await handlePreToolUse(event, sessionID: sessionID)
         case "PermissionRequest":
-            return await handleCodexPermission(event, sessionID: sessionID)
+            return await handlePermission(event, sessionID: sessionID)
         case "PostToolUse":
             // The call went through, so any card still up for it is moot — most
             // likely the person answered in the terminal instead.
@@ -163,6 +163,8 @@ final class SessionStore {
     private func handlePreToolUse(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
         guard let tool = event.toolName else { return (.noOpinion, nil) }
         update(sessionID) { $0.activity = .running(ToolSummary.activity(tool: tool, input: event.toolInput)) }
+
+        if tool == "ExitPlanMode" { return (.noOpinion, nil) }
 
         // AskUserQuestion does not require Claude's normal permission prompt, but
         // its PreToolUse hook can still block and return the completed answers.
@@ -294,8 +296,12 @@ final class SessionStore {
     /// should not be interrupted on its behalf.
     private var codexModes: [String: PermissionMode] = [:]
 
-    private func handleCodexPermission(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
+    private func handlePermission(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
         guard let tool = event.toolName else { return (.noOpinion, nil) }
+        if event.provider == .claude {
+            guard tool == "ExitPlanMode" else { return (.noOpinion, nil) }
+            return await decide(event, sessionID: sessionID, tool: tool)
+        }
         // Newer Codex/Sol hook payloads carry the policy directly. Honour it even
         // when the transcript setting has not reached the watcher yet.
         guard event.permissionMode != .bypass else { return (.noOpinion, nil) }
@@ -426,6 +432,22 @@ final class SessionStore {
 
     func answer(_ request: PendingRequest, answers: [String: String]) {
         request.answer(answers)
+        guard request.isResolved else { return }
+        pending.removeAll { $0.id == request.id }
+        update(request.sessionID) { $0.activity = .thinking }
+    }
+
+    func approvePlan(_ request: PendingRequest, automatic: Bool) {
+        request.approvePlan(automatic: automatic)
+        removeResolved(request)
+    }
+
+    func requestPlanChanges(_ request: PendingRequest, feedback: String) {
+        request.requestPlanChanges(feedback)
+        removeResolved(request)
+    }
+
+    private func removeResolved(_ request: PendingRequest) {
         guard request.isResolved else { return }
         pending.removeAll { $0.id == request.id }
         update(request.sessionID) { $0.activity = .thinking }
