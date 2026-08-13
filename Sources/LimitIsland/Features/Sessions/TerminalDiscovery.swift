@@ -41,6 +41,28 @@ enum TerminalDiscovery {
                            agentPID: process.pid, pids: chain)
     }
 
+    /// Startup replay gate. Prefer the UUID visible in a `codex resume` command;
+    /// otherwise accept only a single live Codex process in the rollout's cwd.
+    static func hasLiveCodexRollout(_ url: URL) -> Bool {
+        guard let sessionID = CodexSessionWatcher.sessionID(fromFileName: url) else { return false }
+        let rows = processRows().filter { isCodexCLI($0.command) }
+        if rows.contains(where: { $0.command.contains(sessionID) }) { return true }
+        guard let directory = rolloutDirectory(in: url) else { return false }
+        return rows.filter { workingDirectory(of: $0.pid) == directory }.count == 1
+    }
+
+    private static func rolloutDirectory(in url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 64 * 1024), !data.isEmpty else { return nil }
+        for line in data.split(separator: 0x0A) {
+            guard case let .started(_, directory, source)? = CodexRolloutParser.record(from: Data(line)),
+                  source != .subagent else { continue }
+            return directory
+        }
+        return nil
+    }
+
     /// Exclude `codex-code-mode-host` children. They share the cwd and tty with
     /// the real CLI and previously made every lookup look ambiguous.
     private static func isCodexCLI(_ command: String) -> Bool {

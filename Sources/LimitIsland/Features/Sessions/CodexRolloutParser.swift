@@ -13,10 +13,16 @@ import Foundation
 /// separated from the file watching so it can be tested against recorded lines
 /// without touching the filesystem.
 enum CodexRolloutParser {
+    enum TranscriptSource: Equatable {
+        case user
+        case subagent
+        case unknown
+    }
+
     /// One meaningful thing that happened in a Codex session.
     enum Record: Equatable {
         /// The session opened: its identifier and working directory.
-        case started(sessionID: String, workingDirectory: String?)
+        case started(sessionID: String, workingDirectory: String?, source: TranscriptSource)
         /// The person asked for something.
         case prompt(String)
         /// A turn began.
@@ -40,7 +46,11 @@ enum CodexRolloutParser {
         switch root["type"] as? String {
         case "session_meta":
             guard let id = payload["session_id"] as? String ?? payload["id"] as? String else { return nil }
-            return .started(sessionID: id, workingDirectory: payload["cwd"] as? String)
+            return .started(
+                sessionID: id,
+                workingDirectory: payload["cwd"] as? String,
+                source: transcriptSource(payload["source"])
+            )
 
         case "event_msg":
             return eventRecord(payload)
@@ -55,6 +65,29 @@ enum CodexRolloutParser {
         default:
             return nil
         }
+    }
+
+    /// Root CLI rollouts are user-facing. Codex has used both strings and nested
+    /// objects for internal agent sources, so classify recursively and default old
+    /// source-less files to unknown rather than accidentally calling them internal.
+    private static func transcriptSource(_ value: Any?) -> TranscriptSource {
+        guard let value else { return .unknown }
+        let description: String
+        if let string = value as? String {
+            description = string
+        } else if JSONSerialization.isValidJSONObject(value),
+                  let data = try? JSONSerialization.data(withJSONObject: value),
+                  let string = String(data: data, encoding: .utf8) {
+            description = string
+        } else {
+            description = String(describing: value)
+        }
+        let source = description.lowercased()
+        if ["subagent", "guardian", "reviewer", "compact"].contains(where: source.contains) {
+            return .subagent
+        }
+        if ["cli", "user", "root"].contains(where: source.contains) { return .user }
+        return .unknown
     }
 
     private static func eventRecord(_ payload: [String: Any]) -> Record? {

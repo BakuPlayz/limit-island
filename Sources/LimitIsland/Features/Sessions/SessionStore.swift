@@ -207,7 +207,8 @@ final class SessionStore {
         let id = update.sessionID
 
         switch update.record {
-        case let .started(_, directory):
+        case let .started(_, directory, source):
+            guard source != .subagent else { return }
             insertIfNeeded(id, provider: .openAI, directory: directory ?? update.workingDirectory)
         case let .prompt(text):
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)

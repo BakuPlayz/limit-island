@@ -19,8 +19,15 @@ struct CodexRolloutParserTests {
         """
         #expect(record(line) == .started(
             sessionID: "019ff192-4b71-7521-bce1-12a7b0919ceb",
-            workingDirectory: "/Users/me/Code/thing"
+            workingDirectory: "/Users/me/Code/thing",
+            source: .unknown
         ))
+    }
+
+    @Test("Internal Codex rollouts identify themselves as subagents")
+    func subagentSource() {
+        let line = #"{"type":"session_meta","payload":{"id":"child","cwd":"/tmp/x","source":{"subagent":{"role":"reviewer"}}}}"#
+        #expect(record(line) == .started(sessionID: "child", workingDirectory: "/tmp/x", source: .subagent))
     }
 
     @Test("A user message becomes the row's title")

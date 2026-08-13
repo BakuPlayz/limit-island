@@ -29,12 +29,15 @@ final class CodexSessionWatcher {
     private static let horizon: TimeInterval = 6 * 60 * 60
 
     private var pollTask: Task<Void, Never>?
+    private var startedAt = Date.distantPast
     /// How far into each file we have already read.
     private var offsets: [URL: UInt64] = [:]
     /// Working directory per session, remembered from `session_meta`.
     private var directories: [String: String] = [:]
     /// Which session each file belongs to, so later lines can be attributed.
     private var sessionForFile: [URL: String] = [:]
+    /// Files proven to be internal Codex workers are never allowed to create rows.
+    private var ignoredFiles: Set<URL> = []
 
     private let sink: Sink
 
@@ -44,10 +47,11 @@ final class CodexSessionWatcher {
 
     func start() {
         stop()
+        startedAt = .now
         // Replay the bounded recent set once. This is what restores a Codex tab
         // that is already idle when Limit Island launches; seeding at EOF made it
         // invisible until the user submitted another prompt.
-        for url in recentFiles() {
+        for url in recentFiles(requireLiveProcess: true) {
             offsets[url] = 0
         }
         poll()
@@ -67,7 +71,7 @@ final class CodexSessionWatcher {
     // MARK: - Polling
 
     private func poll() {
-        for url in recentFiles() {
+        for url in recentFiles(requireLiveProcess: false) {
             let size = fileSize(url)
             let start = offsets[url] ?? 0
             guard size > start else {
@@ -83,9 +87,15 @@ final class CodexSessionWatcher {
     }
 
     private func emit(_ line: Data, from url: URL) {
+        guard !ignoredFiles.contains(url) else { return }
         guard let record = CodexRolloutParser.record(from: line) else { return }
 
-        if case let .started(sessionID, directory) = record {
+        if case let .started(sessionID, directory, source) = record {
+            guard source != .subagent else {
+                ignoredFiles.insert(url)
+                sessionForFile[url] = nil
+                return
+            }
             sessionForFile[url] = sessionID
             if let directory { directories[sessionID] = directory }
         }
@@ -115,7 +125,7 @@ final class CodexSessionWatcher {
     // MARK: - Files
 
     /// Rollout files touched recently enough to belong to a live session.
-    private func recentFiles() -> [URL] {
+    private func recentFiles(requireLiveProcess: Bool) -> [URL] {
         let cutoff = Date.now.addingTimeInterval(-Self.horizon)
         guard let enumerator = FileManager.default.enumerator(
             at: Self.sessionsDirectory,
@@ -130,7 +140,14 @@ final class CodexSessionWatcher {
                   let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
                   let modified = values.contentModificationDate,
                   modified > cutoff else { continue }
-            found.append(url)
+            // Historical rollouts are replayed only when they can be tied to a
+            // currently running root Codex process. A file first observed after
+            // startup is naturally live and is admitted by `poll` below.
+            let appearedWhileWatching = modified >= startedAt
+            if TerminalDiscovery.hasLiveCodexRollout(url) ||
+                (!requireLiveProcess && (offsets[url] != nil || appearedWhileWatching)) {
+                found.append(url)
+            }
         }
         return found
     }

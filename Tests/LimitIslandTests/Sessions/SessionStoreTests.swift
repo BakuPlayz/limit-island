@@ -200,7 +200,7 @@ struct SessionStoreTests {
         func apply(_ record: CodexRolloutParser.Record) {
             store.apply(.init(sessionID: "cx", record: record, workingDirectory: "/Users/me/Code/thing"))
         }
-        apply(.started(sessionID: "cx", workingDirectory: "/Users/me/Code/thing"))
+        apply(.started(sessionID: "cx", workingDirectory: "/Users/me/Code/thing", source: .user))
         #expect(store.sessions.count == 1)
         #expect(store.sessions[0].provider == .openAI)
         #expect(store.sessions[0].project == "thing")
@@ -213,6 +213,17 @@ struct SessionStoreTests {
 
         apply(.turnCompleted)
         #expect(store.sessions[0].activity == .done)
+    }
+
+    @Test("Internal Codex transcripts never create sessions")
+    func ignoresCodexSubagents() {
+        let store = SessionStore()
+        store.apply(.init(
+            sessionID: "child",
+            record: .started(sessionID: "child", workingDirectory: "/tmp/x", source: .subagent),
+            workingDirectory: "/tmp/x"
+        ))
+        #expect(store.sessions.isEmpty)
     }
 
     @Test("A chosen terminal destination is remembered only on its live session")
