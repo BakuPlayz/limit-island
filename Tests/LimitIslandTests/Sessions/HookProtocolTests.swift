@@ -112,6 +112,17 @@ struct HookProtocolTests {
         #expect(denialSpecific["permissionDecisionReason"] == nil)
     }
 
+    @Test("Codex permission decisions use its PermissionRequest shape")
+    func codexPermissionShape() throws {
+        let event = try decode(#"{"event":"PermissionRequest","cli":"codex","payload":{"thread_id":"s","tool_name":"exec"},"env":{},"pids":[],"tty":"","sentAt":0}"#)
+        let text = HookReply(decision: .allow).serialised(for: event, reason: "Approved")
+        let root = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        let specific = try #require(root["hookSpecificOutput"] as? [String: Any])
+        let decision = try #require(specific["decision"] as? [String: Any])
+        #expect(specific["hookEventName"] as? String == "PermissionRequest")
+        #expect(decision["behavior"] as? String == "allow")
+    }
+
     @Test("Permission modes are read from the payload, and an unknown one asks")
     func permissionModes() throws {
         func mode(_ raw: String) throws -> PermissionMode {
@@ -130,6 +141,12 @@ struct HookProtocolTests {
 
         let absent = try decode(#"{"event":"PreToolUse","cli":"claude","payload":{"session_id":"s"},"env":{},"pids":[],"tty":"","sentAt":0}"#)
         #expect(absent.permissionMode == .standard)
+    }
+
+    @Test("Codex auto approval policy is a bypass mode")
+    func codexAutoPolicy() throws {
+        let event = try decode(#"{"event":"PermissionRequest","cli":"codex","payload":{"thread_id":"s","tool_name":"exec","approval_policy":"never"},"env":{},"pids":[],"tty":"","sentAt":0}"#)
+        #expect(event.permissionMode == .bypass)
     }
 
     @Test("Claude notification types are normalized")
@@ -152,7 +169,7 @@ struct HookProtocolTests {
         // to park a thread producing one. If they disagree, either the CLI hangs
         // until its hook times out or a decision is written to a socket nobody is
         // reading. The helper's list lives in Sources/LimitIslandHook/main.swift.
-        #expect(HookServer.blockingEvents == ["PreToolUse"])
+        #expect(HookServer.blockingEvents == ["PreToolUse", "PermissionRequest"])
 
         let helper = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // …/Tests/LimitIslandTests/Sessions

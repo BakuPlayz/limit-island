@@ -16,7 +16,7 @@ let cli = arguments.count > 2 ? arguments[2] : "claude"
 
 /// Events where the CLI is waiting on our answer, so we hold the pipe open.
 /// Everything else is fire-and-forget: report and get out of the way.
-let blockingEvents: Set<String> = ["PreToolUse"]
+let blockingEvents: Set<String> = ["PreToolUse", "PermissionRequest"]
 
 // MARK: - Input
 

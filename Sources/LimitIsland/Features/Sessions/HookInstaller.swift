@@ -43,6 +43,10 @@ enum HookInstaller {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/config.toml")
     }
 
+    static var codexHooksURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/hooks.json")
+    }
+
     private static var replacedCodexNotifyURL: URL {
         HookServer.supportDirectory.appendingPathComponent("replaced-codex-notify.json")
     }
@@ -176,7 +180,11 @@ enum HookInstaller {
         guard let line = contents
             .components(separatedBy: .newlines)
             .first(where: { isOurNotifyLine($0) }) else { return .absent }
-        return line.contains(helperURL.path) ? .installed : .stale
+        guard line.contains(helperURL.path) else { return .stale }
+        guard let settings = readSettings(codexHooksURL),
+              let hooks = settings["hooks"] as? [String: Any],
+              !ourCommands(in: hooks).isEmpty else { return .absent }
+        return .installed
     }
 
     static func installCodex() throws {
@@ -202,6 +210,18 @@ enum HookInstaller {
         }
 
         try write(lines.joined(separator: "\n"), to: codexConfigURL)
+        var settings = readSettings(codexHooksURL) ?? [:]
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        var matchers = hooks["PermissionRequest"] as? [[String: Any]] ?? []
+        matchers = matchers.compactMap { pruneOurHooks(from: $0) }
+        matchers.append(["hooks": [[
+            "type": "command",
+            "command": "\"\(helperURL.path)\" PermissionRequest codex",
+            "timeout": blockingTimeoutSeconds
+        ]]])
+        hooks["PermissionRequest"] = matchers
+        settings["hooks"] = hooks
+        try write(settings, to: codexHooksURL)
         Log.hooks.info("installed codex notify into \(codexConfigURL.path, privacy: .public)")
     }
 
@@ -216,6 +236,15 @@ enum HookInstaller {
             lines.removeAll(where: isOurNotifyLine)
         }
         try write(lines.joined(separator: "\n"), to: codexConfigURL)
+        if var settings = readSettings(codexHooksURL), var hooks = settings["hooks"] as? [String: Any] {
+            for (event, value) in hooks {
+                guard let matchers = value as? [[String: Any]] else { continue }
+                let remaining = matchers.compactMap { pruneOurHooks(from: $0) }
+                hooks[event] = remaining.isEmpty ? nil : remaining
+            }
+            settings["hooks"] = hooks.isEmpty ? nil : hooks
+            try write(settings, to: codexHooksURL)
+        }
         Log.hooks.info("removed codex notify from \(codexConfigURL.path, privacy: .public)")
     }
 

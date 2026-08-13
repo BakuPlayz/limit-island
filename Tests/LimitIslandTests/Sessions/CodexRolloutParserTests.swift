@@ -91,6 +91,7 @@ struct CodexRolloutParserTests {
         #expect(mode("never") == .approvalPolicy(.bypass))
         #expect(mode("on-request") == .approvalPolicy(.standard))
         #expect(mode("untrusted") == .approvalPolicy(.standard))
+        #expect(record(#"{"type":"turn_context","payload":{"approval_policy":"never"}}"#) == .approvalPolicy(.bypass))
     }
 
     @Test("The noisy majority of records are ignored")

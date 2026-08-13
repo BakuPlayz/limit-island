@@ -59,7 +59,11 @@ enum CodexRolloutParser {
             return responseRecord(payload)
 
         case "turn_context":
-            // Only useful for the directory, and `session_meta` already gave us one.
+            // Current Codex/Sol rollouts repeat the effective policy here. This is
+            // often the first reliable auto-mode signal for a resumed session.
+            if let raw = payload["approval_policy"] as? String ?? payload["approvalPolicy"] as? String {
+                return .approvalPolicy(PermissionMode(codexApprovalPolicy: raw))
+            }
             return nil
 
         default:

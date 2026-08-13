@@ -147,7 +147,7 @@ final class HookServer: @unchecked Sendable {
         semaphore.wait()
 
         let (reply, reason) = box.answer
-        var response = Data(reply.serialised(reason: reason).utf8)
+        var response = Data(reply.serialised(for: event, reason: reason).utf8)
         response.append(0x0A)
         _ = response.withUnsafeBytes { buffer in
             send(descriptor, buffer.baseAddress, buffer.count, 0)
@@ -156,7 +156,7 @@ final class HookServer: @unchecked Sendable {
 
     /// Events where the helper waits for a reply. Must agree with the helper's own
     /// list in `Sources/LimitIslandHook/main.swift`; `HookProtocolTests` checks it.
-    static let blockingEvents: Set<String> = ["PreToolUse"]
+    static let blockingEvents: Set<String> = ["PreToolUse", "PermissionRequest"]
 
     /// Reads up to the first newline. Frames are one line, so anything after it is
     /// a protocol error and discarded.

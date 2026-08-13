@@ -102,6 +102,8 @@ final class SessionStore {
             }
         case "PreToolUse":
             return await handlePreToolUse(event, sessionID: sessionID)
+        case "PermissionRequest":
+            return await handleCodexPermission(event, sessionID: sessionID)
         case "PostToolUse":
             // The call went through, so any card still up for it is moot — most
             // likely the person answered in the terminal instead.
@@ -251,6 +253,15 @@ final class SessionStore {
     /// Code's `permission_mode` is: a session the person has set to ask for nothing
     /// should not be interrupted on its behalf.
     private var codexModes: [String: PermissionMode] = [:]
+
+    private func handleCodexPermission(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
+        guard let tool = event.toolName else { return (.noOpinion, nil) }
+        // Newer Codex/Sol hook payloads carry the policy directly. Honour it even
+        // when the transcript setting has not reached the watcher yet.
+        guard event.permissionMode != .bypass else { return (.noOpinion, nil) }
+        guard codexModes[sessionID] != .bypass else { return (.noOpinion, nil) }
+        return await decide(event, sessionID: sessionID, tool: tool)
+    }
 
     /// The terminal a Codex session is running in, learned from its `notify` hook —
     /// rollout files do not record the environment. Prefer the notify payload's

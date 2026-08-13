@@ -394,10 +394,9 @@ private struct SessionsSettings: View {
             Text("""
             Codex sessions are read from the transcripts it already writes to \
             ~/.codex/sessions, so activity appears with no setup at all. Installing \
-            adds one `notify` line to \(HookInstaller.codexConfigURL.path) — that is \
-            the only moment Codex tells us which terminal it is in, so jumping to a \
-            Codex session needs it. Your existing settings, including every \
-            [projects.*] entry, are left exactly as they are.
+            adds the terminal `notify` line plus a blocking PermissionRequest hook. \
+            Codex asks you to trust new hooks once in its `/hooks` review; Limit Island \
+            never bypasses that review. Existing settings and project entries are kept.
             """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -408,9 +407,9 @@ private struct SessionsSettings: View {
 
     private var codexStateTitle: String {
         switch codexState {
-        case .installed: "Codex notify installed"
-        case .absent: "Codex notify not installed"
-        case .stale: "Codex notify points at an older copy"
+        case .installed: "Codex integration installed"
+        case .absent: "Codex integration not installed"
+        case .stale: "Codex integration points at an older copy"
         }
     }
 
@@ -429,7 +428,7 @@ private struct SessionsSettings: View {
             Text("What each CLI supports")
                 .font(.headline)
             capability(.claude, monitor: true, approve: true, note: "Full support through Claude Code's hooks.")
-            capability(.openAI, monitor: true, approve: false, note: "Sessions, live activity and jump come from Codex's own session files and its notify hook. Codex has no hook that waits for a reply, so it cannot be answered from the notch.")
+            capability(.openAI, monitor: true, approve: true, note: "Live activity comes from session files; official permission hooks block for Allow/Deny, and simple choices use verified terminal input.")
         }
         .padding(12)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))

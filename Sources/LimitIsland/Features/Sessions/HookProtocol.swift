@@ -37,7 +37,9 @@ struct HookEvent: Decodable, Sendable {
     /// every `PreToolUse`, and it is the difference between a person who wants to be
     /// asked and one who has already said yes to everything.
     var permissionMode: PermissionMode {
-        PermissionMode(payload.string("permission_mode", "permissionMode"))
+        PermissionMode(payload.string(
+            "permission_mode", "permissionMode", "approval_policy", "approvalPolicy"
+        ))
     }
 
     var provider: Provider {
@@ -86,7 +88,7 @@ enum PermissionMode: Equatable, Sendable {
         // recognise should never be read as blanket permission.
         switch raw {
         case "acceptEdits": self = .acceptEdits
-        case "bypassPermissions", "dangerously-skip-permissions": self = .bypass
+        case "bypassPermissions", "dangerously-skip-permissions", "never", "full-auto", "auto": self = .bypass
         case "plan": self = .plan
         default: self = .standard
         }
@@ -130,8 +132,18 @@ struct HookReply: Sendable {
     static let noOpinion = HookReply(decision: nil)
 
     /// Claude Code's `PreToolUse` output shape.
-    func serialised(reason: String?) -> String {
+    func serialised(for event: HookEvent? = nil, reason: String?) -> String {
         guard let decision else { return "{}" }
+        if event?.event == "PermissionRequest", event?.provider == .openAI {
+            var decisionObject: [String: Any] = ["behavior": decision.rawValue]
+            if let reason { decisionObject["message"] = reason }
+            let root: [String: Any] = ["hookSpecificOutput": [
+                "hookEventName": "PermissionRequest", "decision": decisionObject
+            ]]
+            guard let data = try? JSONSerialization.data(withJSONObject: root),
+                  let text = String(data: data, encoding: .utf8) else { return "{}" }
+            return text
+        }
         var specific: [String: Any] = [
             "hookEventName": "PreToolUse",
             "permissionDecision": decision.rawValue
