@@ -226,6 +226,35 @@ struct SessionStoreTests {
         #expect(store.sessions.isEmpty)
     }
 
+    @Test("An exact terminal identity coalesces stale and live rows")
+    func coalescesExactTerminalIdentity() {
+        let store = SessionStore()
+        store.apply(.init(sessionID: "old", record: .prompt("useful prompt"), workingDirectory: "/tmp/x"))
+        store.apply(.init(sessionID: "live", record: .turnStarted, workingDirectory: "/tmp/x"))
+        let terminal = TerminalRef(program: "iTerm.app", tty: "/dev/ttys001", workingDirectory: "/tmp/x", agentPID: 4242, pids: [4242])
+        store.attachCodexTerminal(terminal, sessionID: "old", workingDirectory: "/tmp/x")
+        store.attachCodexTerminal(terminal, sessionID: "live", workingDirectory: "/tmp/x")
+        #expect(store.sessions.map(\.id) == ["live"])
+        #expect(store.sessions[0].lastPrompt == "useful prompt")
+    }
+
+    @Test("Matching titles in distinct processes remain distinct sessions")
+    func preservesDistinctProcesses() {
+        let store = SessionStore()
+        for id in ["one", "two"] {
+            store.apply(.init(sessionID: id, record: .prompt("same title"), workingDirectory: "/tmp/x"))
+        }
+        store.attachCodexTerminal(
+            TerminalRef(program: nil, tty: "/dev/ttys001", workingDirectory: "/tmp/x", agentPID: 1001, pids: [1001]),
+            sessionID: "one", workingDirectory: "/tmp/x"
+        )
+        store.attachCodexTerminal(
+            TerminalRef(program: nil, tty: "/dev/ttys001", workingDirectory: "/tmp/x", agentPID: 1002, pids: [1002]),
+            sessionID: "two", workingDirectory: "/tmp/x"
+        )
+        #expect(store.sessions.count == 2)
+    }
+
     @Test("A chosen terminal destination is remembered only on its live session")
     func remembersTerminalDestination() async throws {
         let store = SessionStore()

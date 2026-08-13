@@ -98,6 +98,20 @@ struct TerminalRef: Equatable, Sendable, Codable {
         case nil: return "Terminal"
         }
     }
+
+    /// Exact identity of the agent or terminal surface. The process wins because
+    /// two agents may intentionally share a pane; pane/session/TTY values provide
+    /// stable fallbacks for restored transcript rows that do not yet have a PID.
+    var stableIdentity: String? {
+        if let agentPID { return "pid:\(agentPID)" }
+        if let tmuxPane { return "tmux:\(tmuxSocket ?? ""):\(tmuxPane)" }
+        if let weztermPane { return "wezterm:\(weztermPane)" }
+        if let kittyWindowID { return "kitty:\(kittyListenOn ?? ""):\(kittyWindowID)" }
+        if let iTermSessionID { return "iterm:\(iTermSessionID)" }
+        if let terminalSessionID { return "terminal:\(terminalSessionID)" }
+        if let tty { return "tty:\(tty)" }
+        return nil
+    }
 }
 
 /// A concrete tab or pane presented when a terminal lookup has more than one

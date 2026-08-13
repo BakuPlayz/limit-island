@@ -244,6 +244,7 @@ final class SessionStore {
     func attachCodexTerminal(_ terminal: TerminalRef, sessionID: String?, workingDirectory: String?) {
         if let sessionID, let index = sessions.firstIndex(where: { $0.id == sessionID && $0.provider == .openAI }) {
             sessions[index].terminal = terminal
+            coalesceSessions(preferredID: sessionID)
             return
         }
         guard let workingDirectory else { return }
@@ -253,6 +254,7 @@ final class SessionStore {
         }
         guard candidates.count == 1, let index = candidates.first else { return }
         sessions[index].terminal = terminal
+        coalesceSessions(preferredID: sessions[index].id)
     }
 
     private func insertIfNeeded(_ id: String, provider: Provider, directory: String?) {
@@ -289,6 +291,7 @@ final class SessionStore {
                       let index = self.sessions.firstIndex(where: { $0.id == id }),
                       self.sessions[index].terminal == nil else { return }
                 self.sessions[index].terminal = terminal
+                self.coalesceSessions(preferredID: id)
             }
         }
     }
@@ -350,6 +353,7 @@ final class SessionStore {
                 sessions[index].project = (directory as NSString).lastPathComponent
             }
             reorder()
+            coalesceSessions(preferredID: id)
             return
         }
         sessions.insert(
@@ -365,6 +369,33 @@ final class SessionStore {
             ),
             at: 0
         )
+        coalesceSessions(preferredID: id)
+    }
+
+    /// Coalesces only exact runtime identities. Matching titles or projects are
+    /// intentionally irrelevant: two agents doing the same work in separate panes
+    /// are two sessions and both remain visible.
+    private func coalesceSessions(preferredID: String) {
+        guard let preferredIndex = sessions.firstIndex(where: { $0.id == preferredID }),
+              let identity = sessions[preferredIndex].terminal?.stableIdentity else { return }
+        let duplicates = sessions.indices.filter {
+            $0 != preferredIndex && sessions[$0].terminal?.stableIdentity == identity
+        }
+        guard !duplicates.isEmpty else { return }
+
+        var retained = sessions[preferredIndex]
+        for index in duplicates {
+            let stale = sessions[index]
+            if retained.lastPrompt == nil { retained.lastPrompt = stale.lastPrompt }
+            if retained.project == nil { retained.project = stale.project }
+            if retained.terminal == nil { retained.terminal = stale.terminal }
+            retained.startedAt = min(retained.startedAt, stale.startedAt)
+            resolvePending(sessionID: stale.id, tool: nil)
+        }
+        let duplicateIDs = Set(duplicates.map { sessions[$0].id })
+        sessions.removeAll { duplicateIDs.contains($0.id) }
+        if let index = sessions.firstIndex(where: { $0.id == preferredID }) { sessions[index] = retained }
+        reorder()
     }
 
     private func update(_ id: String, _ change: (inout AgentSession) -> Void) {
