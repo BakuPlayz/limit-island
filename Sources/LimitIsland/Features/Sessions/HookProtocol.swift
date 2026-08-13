@@ -28,6 +28,9 @@ struct HookEvent: Decodable, Sendable {
     var workingDirectory: String? { payload.string("cwd", "workspace_dir") }
     var prompt: String? { payload.string("prompt", "user_prompt") }
     var message: String? { payload.string("message", "notification") }
+    var notificationType: NotificationType {
+        NotificationType(payload.string("notification_type", "notificationType"))
+    }
     var transcriptPath: String? { payload.string("transcript_path", "transcriptPath") }
 
     /// Which permission mode the session is running in. Claude Code sends this on
@@ -42,6 +45,22 @@ struct HookEvent: Decodable, Sendable {
         case "codex": .openAI
         case "gemini": .gemini
         default: .claude
+        }
+    }
+}
+
+enum NotificationType: Equatable, Sendable {
+    case permissionPrompt, idlePrompt, elicitationDialog
+    case passive
+    case unknown
+
+    init(_ raw: String?) {
+        switch raw {
+        case "permission_prompt": self = .permissionPrompt
+        case "idle_prompt": self = .idlePrompt
+        case "elicitation_dialog": self = .elicitationDialog
+        case "auth_success", "elicitation_complete", "elicitation_response": self = .passive
+        default: self = .unknown
         }
     }
 }

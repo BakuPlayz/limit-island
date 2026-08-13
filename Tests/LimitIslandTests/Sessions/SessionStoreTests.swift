@@ -276,7 +276,9 @@ struct SessionStoreTests {
         store.approvalMatcher = ""
         _ = await store.handle(try event("SessionStart", session: "a"))
         _ = await store.handle(try event("SessionStart", session: "b"))
-        _ = await store.handle(try event("Notification", session: "a", payload: ["message": "needs you"]))
+        _ = await store.handle(try event("Notification", session: "a", payload: [
+            "message": "needs you", "notification_type": "permission_prompt"
+        ]))
         // `b` is more recent, but `a` is the one that cannot continue without you.
         #expect(store.sessions.first?.id == "a")
         #expect(store.isWaitingOnUser)
@@ -287,9 +289,41 @@ struct SessionStoreTests {
         let store = SessionStore()
         store.approvalMatcher = ""
         _ = await store.handle(try event("SessionStart"))
-        _ = await store.handle(try event("Notification", payload: ["message": "Claude needs your permission to use Bash"]))
+        _ = await store.handle(try event("Notification", payload: [
+            "message": "Claude needs your permission to use Bash",
+            "notification_type": "permission_prompt"
+        ]))
         #expect(store.sessions[0].activity == .waitingInTerminal("Claude needs your permission to use Bash"))
         #expect(store.sessions[0].activity.isWaiting)
+    }
+
+    @Test("Claude idle and passive notifications do not falsely request input")
+    func nonInteractiveNotifications() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart"))
+        _ = await store.handle(try event("Notification", payload: [
+            "message": "Claude is waiting for your input", "notification_type": "idle_prompt"
+        ]))
+        #expect(store.sessions[0].activity == .done)
+        #expect(!store.isWaitingOnUser)
+
+        _ = await store.handle(try event("Notification", payload: [
+            "message": "Signed in", "notification_type": "auth_success"
+        ]))
+        #expect(store.sessions[0].activity == .done)
+    }
+
+    @Test("Synthetic task notifications never replace the real Claude prompt")
+    func ignoresTaskNotificationPrompts() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("UserPromptSubmit", payload: ["prompt": "real request"]))
+        _ = await store.handle(try event("UserPromptSubmit", payload: [
+            "prompt": "<task-notification>\n<status>completed</status>\n</task-notification>"
+        ]))
+        #expect(store.sessions.count == 1)
+        #expect(store.sessions[0].lastPrompt == "real request")
     }
 
     @Test("Stopping the app releases anything still waiting, rather than hanging an agent")

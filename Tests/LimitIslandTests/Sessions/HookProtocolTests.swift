@@ -132,6 +132,20 @@ struct HookProtocolTests {
         #expect(absent.permissionMode == .standard)
     }
 
+    @Test("Claude notification types are normalized")
+    func notificationTypes() throws {
+        func type(_ raw: String) throws -> NotificationType {
+            try decode("""
+            {"event":"Notification","cli":"claude","payload":{"session_id":"s","notification_type":"\(raw)"},
+             "env":{},"pids":[],"tty":"","sentAt":0}
+            """).notificationType
+        }
+        #expect(try type("permission_prompt") == .permissionPrompt)
+        #expect(try type("idle_prompt") == .idlePrompt)
+        #expect(try type("auth_success") == .passive)
+        #expect(try type("future_type") == .unknown)
+    }
+
     @Test("Only PreToolUse blocks, and both sides agree on that")
     func blockingEventsAgree() throws {
         // The helper decides whether to wait for a reply; the server decides whether

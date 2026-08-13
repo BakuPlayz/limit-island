@@ -82,6 +82,13 @@ final class SessionStore {
             return (.noOpinion, nil)
         }
 
+        // Claude injects completed background work into its transcript as a
+        // synthetic user message. It is not a prompt typed by the person and must
+        // neither create a row nor replace the row's useful title.
+        if event.event == "UserPromptSubmit", event.prompt?.isTaskNotification == true {
+            return (.noOpinion, nil)
+        }
+
         guard let sessionID = event.sessionID else { return (.noOpinion, nil) }
         touch(event, id: sessionID)
 
@@ -101,10 +108,18 @@ final class SessionStore {
             resolvePending(sessionID: sessionID, tool: event.toolName)
             update(sessionID) { $0.activity = .thinking }
         case "Notification":
-            // Claude Code is showing its own prompt. We cannot answer that one, but
-            // we can say so rather than showing a session that looks stalled.
-            update(sessionID) {
-                $0.activity = .waitingInTerminal(event.message ?? "Waiting in the terminal")
+            switch event.notificationType {
+            case .permissionPrompt, .elicitationDialog:
+                // Do not replace a richer card that Limit Island is already
+                // presenting for this session.
+                guard !pending.contains(where: { $0.sessionID == sessionID }) else { break }
+                update(sessionID) {
+                    $0.activity = .waitingInTerminal(event.message ?? "Waiting in the terminal")
+                }
+            case .idlePrompt:
+                update(sessionID) { $0.activity = .done }
+            case .passive, .unknown:
+                break
             }
         case "Stop", "SubagentStop":
             update(sessionID) { $0.activity = .done }
@@ -260,6 +275,9 @@ final class SessionStore {
     private func insertIfNeeded(_ id: String, provider: Provider, directory: String?) {
         if let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].lastEventAt = .now
+            if sessions[index].lastPrompt?.isTaskNotification == true {
+                sessions[index].lastPrompt = nil
+            }
             if let directory, sessions[index].project == nil {
                 sessions[index].project = (directory as NSString).lastPathComponent
             }
@@ -430,5 +448,11 @@ final class SessionStore {
     /// ours or the CLI's own prompt. The window controller opens the panel for it.
     var isWaitingOnUser: Bool {
         !pending.isEmpty || sessions.contains { $0.activity.isWaiting }
+    }
+}
+
+private extension String {
+    var isTaskNotification: Bool {
+        trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<task-notification>")
     }
 }
