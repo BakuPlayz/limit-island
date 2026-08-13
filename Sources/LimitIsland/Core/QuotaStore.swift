@@ -30,6 +30,7 @@ final class QuotaStore: ObservableObject {
     private let reader = SubscriptionUsageReader()
     private var pollTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
     private var loginWindows: [UUID: SubscriptionLoginWindowController] = [:]
     private var oauthFlows: [UUID: GeminiOAuthFlow] = [:]
     /// Surfaced in Settings when a sign-in fails, so the attempt does not just
@@ -61,6 +62,16 @@ final class QuotaStore: ObservableObject {
     func stop() {
         pollTask?.cancel()
         refreshTask?.cancel()
+    }
+
+    /// A request suspended with the machine can return stale cookies, dates or
+    /// network failures. Start a clean cycle and reset the polling cadence.
+    func refreshAfterWake() {
+        refreshGeneration &+= 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        isRefreshing = false
+        start()
     }
 
     // MARK: - Reading
@@ -117,12 +128,16 @@ final class QuotaStore: ObservableObject {
     func refreshAll() {
         guard !isRefreshing else { return }
         isRefreshing = true
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         // Held so `stop()` can cancel it. Previously the task was dropped, and
         // any path that lost it left `isRefreshing` true forever — which the
         // guard above turns into a permanently dead refresh.
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isRefreshing = false }
+            defer {
+                if self.refreshGeneration == generation { self.isRefreshing = false }
+            }
             // Serially, a cycle could outrun its own 60-second interval: each read
             // allows 20 s and the scraping fallback sleeps a further 5 s, so six
             // accounts were enough to never finish. Three at a time keeps a cycle

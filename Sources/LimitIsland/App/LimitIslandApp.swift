@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var islandController: IslandWindowController?
     private var hookServer: HookServer?
     private var codexWatcher: CodexSessionWatcher?
+    private var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Keep LimitIsland as a menu-bar utility, not a Dock application.
@@ -49,6 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         quota.start()
         sessions.start()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.quota.refreshAfterWake() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -60,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         codexWatcher?.stop()
         quota.stop()
         islandController?.stop()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     }
 
     private func startHookServer() {
