@@ -36,8 +36,31 @@ struct SettingsView: View {
                 .tabItem { Label("Accounts", systemImage: "person.2") }
             SessionsSettings(state: state, sessions: sessions)
                 .tabItem { Label("Agents", systemImage: "terminal") }
+            AppearanceSettings()
+                .tabItem { Label("Appearance", systemImage: "textformat") }
         }
         .frame(width: 660, height: 560)
+    }
+}
+
+private struct AppearanceSettings: View {
+    @State private var appearance = AppearanceStore.shared
+
+    var body: some View {
+        Form {
+            Section("Island font") {
+                Picker("Font family", selection: $appearance.selectedFamily) {
+                    Text("System Default — \(appearance.systemFamily)").tag(String?.none)
+                    ForEach(appearance.availableFamilies, id: \.self) { family in
+                        Text(family).font(.custom(family, size: 13)).tag(Optional(family))
+                    }
+                }
+                Text("Applies to agent and question text. Quotas, commands and diffs remain monospaced.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(20)
     }
 }
 
