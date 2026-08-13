@@ -102,8 +102,10 @@ enum PermissionMode: Equatable, Sendable {
         case .bypass:
             return false
         case .acceptEdits:
-            // `acceptEdits` covers edits only; a Bash command still stops.
-            return !PermissionMode.editTools.contains(tool)
+            // Claude's auto/accept-edits mode is an explicit request for an
+            // uninterrupted run. Even tools outside the edit family stay in the
+            // terminal's own policy flow rather than gaining notch prompts.
+            return false
         case .plan:
             // Nothing is being changed yet, so the only thing worth surfacing is
             // the plan waiting for approval.
@@ -112,6 +114,8 @@ enum PermissionMode: Equatable, Sendable {
     }
 
     static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
+
+    var isAutomatic: Bool { self == .acceptEdits || self == .bypass }
 }
 
 /// What the app sends back. Only blocking events read it.

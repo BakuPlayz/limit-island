@@ -114,22 +114,48 @@ struct SessionStoreTests {
         #expect(store.sessions.count == 1)
     }
 
-    @Test("acceptEdits still stops for a command")
-    func acceptEditsDoesNotCoverBash() async throws {
-        // `acceptEdits` accepts edits. A shell command is not an edit, and Claude
-        // Code would still prompt for it, so the notch should still offer to.
+    @Test("Claude auto mode never adds notch permission prompts")
+    func acceptEditsDoesNotInterrupt() async throws {
         let store = SessionStore()
-        let pending = Task {
-            await store.handle(try! self.event("PreToolUse", payload: [
-                "tool_name": "Bash",
-                "permission_mode": "acceptEdits",
-                "tool_input": ["command": "rm -rf build"]
-            ]))
+        let (reply, _) = await store.handle(try event("PreToolUse", payload: [
+            "tool_name": "Bash",
+            "permission_mode": "acceptEdits",
+            "tool_input": ["command": "npm test"]
+        ]))
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("Codex and Sol auto policy never adds a permission card")
+    func codexAutoModeDoesNotInterrupt() async throws {
+        let store = SessionStore()
+        let (reply, _) = await store.handle(try event(
+            "PermissionRequest", session: "cx",
+            payload: ["tool_name": "exec", "approval_policy": "never"], cli: "codex"
+        ))
+        #expect(reply.decision == nil)
+        #expect(store.pending.isEmpty)
+    }
+
+    @Test("Switching a waiting Codex session to auto mode immediately allows its card")
+    func codexAutoModeResolvesExistingCard() async throws {
+        let store = SessionStore()
+        let waiting = Task {
+            await store.handle(try! self.event(
+                "PermissionRequest", session: "cx",
+                payload: ["tool_name": "exec"], cli: "codex"
+            ))
         }
         while store.pending.isEmpty { await Task.yield() }
-        #expect(store.pending[0].tool == "Bash")
-        store.stop()
-        _ = await pending.value
+
+        store.apply(.init(
+            sessionID: "cx", record: .approvalPolicy(.bypass), workingDirectory: "/tmp/x"
+        ))
+
+        let (reply, reason) = await waiting.value
+        #expect(reply.decision == .allow)
+        #expect(reason == "Approved because the session entered auto mode")
+        #expect(store.pending.isEmpty)
     }
 
     @Test("Plan mode surfaces the plan and nothing else")

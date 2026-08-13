@@ -76,6 +76,12 @@ final class PendingRequest: Identifiable {
         finish(.init(decision: .allow), "Approved from Limit Island")
     }
 
+    /// A session switching to auto mode is itself an explicit permission choice,
+    /// so it must not be delayed by the human-click deliberation guard.
+    func allowForAutoMode() {
+        finish(.init(decision: .allow), "Approved because the session entered auto mode")
+    }
+
     func deny() {
         guard !isTooSoon else { return reject("deny") }
         finish(.init(decision: .deny), "Denied from Limit Island")

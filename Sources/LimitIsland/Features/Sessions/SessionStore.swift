@@ -92,6 +92,13 @@ final class SessionStore {
         guard let sessionID = event.sessionID else { return (.noOpinion, nil) }
         touch(event, id: sessionID)
 
+        // Mode-bearing hooks are also how Claude tells us someone changed modes
+        // while an older permission card was already waiting. Resolve that card
+        // immediately instead of leaving a stale interruption on screen.
+        if event.permissionMode.isAutomatic {
+            allowPendingForAutoMode(sessionID: sessionID)
+        }
+
         switch event.event {
         case "SessionStart":
             update(sessionID) { $0.activity = .starting }
@@ -246,6 +253,7 @@ final class SessionStore {
             self.update(id) { $0.activity = .waitingInTerminal(text) }
         case let .approvalPolicy(mode):
             codexModes[id] = mode
+            if mode.isAutomatic { allowPendingForAutoMode(sessionID: id) }
         }
     }
 
@@ -367,6 +375,17 @@ final class SessionStore {
             request.defer_()
         }
         pending.removeAll { $0.sessionID == sessionID && (tool == nil || $0.tool == tool) }
+    }
+
+    private func allowPendingForAutoMode(sessionID: String) {
+        let requests = pending.filter {
+            $0.sessionID == sessionID && $0.tool != "AskUserQuestion"
+        }
+        guard !requests.isEmpty else { return }
+        for request in requests { request.allowForAutoMode() }
+        let ids = Set(requests.map(\.id))
+        pending.removeAll { ids.contains($0.id) }
+        update(sessionID) { $0.activity = .thinking }
     }
 
     // MARK: - Session bookkeeping
