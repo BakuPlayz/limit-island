@@ -241,6 +241,20 @@ struct SessionStoreTests {
         #expect(store.sessions[0].activity == .done)
     }
 
+    @Test("A terminal-side Codex function answer clears its question")
+    func codexFunctionAnswerClearsQuestion() {
+        let store = SessionStore()
+        let question = AgentQuestion(items: [.init(
+            question: "Choose", header: "Choice",
+            options: [.init(label: "One", description: nil)], multiSelect: false
+        )])
+        store.apply(.init(sessionID: "cx", record: .question(question), workingDirectory: "/tmp/x"))
+        #expect(store.activeInteraction != nil)
+        store.apply(.init(sessionID: "cx", record: .functionAnswered, workingDirectory: "/tmp/x"))
+        #expect(store.activeInteraction == nil)
+        #expect(store.session(id: "cx")?.activity == .thinking)
+    }
+
     @Test("Internal Codex transcripts never create sessions")
     func ignoresCodexSubagents() {
         let store = SessionStore()
@@ -394,6 +408,44 @@ struct SessionStoreTests {
         #expect(reply.decision == .allow)
         #expect(reason == "Approved from Limit Island")
         #expect(store.pending.isEmpty)
+    }
+
+    @Test("Waiting requests are answered oldest first")
+    func interactionsAreFIFO() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = "Bash"
+
+        let firstTask = Task {
+            await store.handle(try! self.event("PreToolUse", session: "first", payload: [
+                "tool_name": "Bash", "tool_input": ["command": "first"]
+            ]))
+        }
+        while store.pending.count < 1 { await Task.yield() }
+
+        let secondTask = Task {
+            await store.handle(try! self.event("PreToolUse", session: "second", payload: [
+                "tool_name": "Bash", "tool_input": ["command": "second"]
+            ]))
+        }
+        while store.pending.count < 2 { await Task.yield() }
+
+        guard case let .pending(first)? = store.activeInteraction else {
+            Issue.record("Expected the oldest pending interaction")
+            return
+        }
+        #expect(first.sessionID == "first")
+        try await Task.sleep(for: .milliseconds(Int(PendingRequest.minimumDeliberationTime * 1000) + 80))
+        store.allow(first)
+
+        guard case let .pending(second)? = store.activeInteraction else {
+            Issue.record("Expected the next pending interaction")
+            return
+        }
+        #expect(second.sessionID == "second")
+        store.deny(second)
+        _ = await firstTask.value
+        _ = await secondTask.value
+        #expect(store.activeInteraction == nil)
     }
 
     @Test("Answering in the terminal drops the card instead of leaving it up")

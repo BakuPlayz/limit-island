@@ -127,6 +127,7 @@ struct HookReply: Sendable {
     /// `nil` means "no opinion": the helper prints nothing and the CLI's own
     /// permission flow runs exactly as it would without us.
     var decision: Decision?
+    var updatedInput: JSONValue? = nil
 
     enum Decision: String, Sendable {
         case allow
@@ -153,6 +154,11 @@ struct HookReply: Sendable {
             "permissionDecision": decision.rawValue
         ]
         if let reason { specific["permissionDecisionReason"] = reason }
+        if let updatedInput,
+           let data = try? JSONEncoder().encode(updatedInput),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            specific["updatedInput"] = object
+        }
         let root: [String: Any] = ["hookSpecificOutput": specific]
         guard let data = try? JSONSerialization.data(withJSONObject: root),
               let text = String(data: data, encoding: .utf8) else { return "{}" }

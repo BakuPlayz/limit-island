@@ -42,6 +42,7 @@ final class PendingRequest: Identifiable {
 
     var kind: Kind {
         switch tool {
+        case "AskUserQuestion": .question(AgentQuestion.parse(input))
         case "ExitPlanMode": .plan(input?.string("plan") ?? "")
         case "Edit", "MultiEdit", "Write", "NotebookEdit": .edit
         default: .general
@@ -52,6 +53,7 @@ final class PendingRequest: Identifiable {
         case edit
         case plan(String)
         case general
+        case question(AgentQuestion?)
     }
 
     var title: String { ToolSummary.activity(tool: tool, input: input) }
@@ -85,6 +87,14 @@ final class PendingRequest: Identifiable {
     func deny() {
         guard !isTooSoon else { return reject("deny") }
         finish(.init(decision: .deny), "Denied from Limit Island")
+    }
+
+    func answer(_ answers: [String: String]) {
+        guard !isTooSoon else { return reject("answer") }
+        guard case let .object(original) = input else { return }
+        var updated = original
+        updated["answers"] = .object(answers.mapValues(JSONValue.string))
+        finish(.init(decision: .allow, updatedInput: .object(updated)), "Answered from Limit Island")
     }
 
     /// Hands the decision back to the CLI's own prompt. Used on timeout, on quit,

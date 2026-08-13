@@ -205,38 +205,78 @@ struct IslandContent: View {
 
     @ViewBuilder
     private var content: some View {
-        VStack(spacing: 0) {
-            if let sheet = presenter.jumpSheet {
-                jumpSheet(sheet)
-            } else {
-            ForEach(sessions.pending) { request in
-                PermissionCard(
-                    request: request,
-                    onAllow: {
-                        Log.hooks.debug("allow button fired")
-                        sessions.allow(request)
-                    },
-                    onDeny: {
-                        Log.hooks.debug("deny button fired")
-                        sessions.deny(request)
+        if let interaction = sessions.activeInteraction {
+            ScrollView {
+                activeCard(interaction)
+                    .id(interaction.id)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: InteractionHeightKey.self, value: ceil(geometry.size.height)
+                            )
+                        }
                     }
-                )
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
             }
-
-            if sessions.sessions.isEmpty {
-                emptyState
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
+            .scrollIndicators(.visible)
+            .onPreferenceChange(InteractionHeightKey.self) { height in
+                guard height > 0 else { return }
+                Task { @MainActor in presenter.set(\.interactionHeight, to: height) }
+            }
+            .onChange(of: interaction.id) { _, _ in
+                presenter.set(\.interactionHeight, to: 0)
+            }
+        } else if let sheet = presenter.jumpSheet {
+            jumpSheet(sheet)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if sessions.sessions.isEmpty {
+                            emptyState
+                    } else {
                         ForEach(sessions.sessions) { session in
                             SessionRow(session: session) { onJump(session) }
                         }
                     }
                 }
+                .padding(.vertical, 8)
             }
-            }
+            .scrollIndicators(.visible)
+        }
+    }
+
+    @ViewBuilder
+    private func activeCard(_ interaction: SessionStore.ActiveInteraction) -> some View {
+        switch interaction {
+        case let .pending(request):
+            PermissionCard(
+                request: request,
+                queueCount: sessions.waitingInteractionCount,
+                onAllow: { sessions.allow(request) },
+                onDeny: { sessions.deny(request) },
+                onAnswer: { sessions.answer(request, answers: $0) },
+                onJump: {
+                    guard let session = sessions.session(id: request.sessionID) else { return }
+                    onJump(session)
+                },
+                onQuestionState: { _, _, handler in presenter.questionShortcut = handler }
+            )
+            .onDisappear { presenter.questionShortcut = nil }
+
+        case let .codex(session, state):
+            CodexQuestionCard(
+                question: state.question,
+                queueCount: sessions.waitingInteractionCount,
+                onSelection: { selections, multiSelect in
+                    TerminalJumper.answerCodexSelection(selections, multiSelect: multiSelect, in: session)
+                },
+                onFinished: { sessions.dismissCodexQuestion(sessionID: session.id) },
+                onFallback: { onJump(session) },
+                onQuestionState: { handler in presenter.questionShortcut = handler }
+            )
+            .onDisappear { presenter.questionShortcut = nil }
         }
     }
 
@@ -354,6 +394,13 @@ struct IslandContent: View {
 
     private var hasPinnedMeters: Bool {
         quota.leftPinnedMeter != nil || quota.rightStripMeter != nil
+    }
+}
+
+private struct InteractionHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

@@ -32,7 +32,9 @@ enum CodexRolloutParser {
         /// The agent is doing something; the string is the panel's activity line.
         case activity(String)
         /// Codex has paused in its terminal and is waiting for the person.
-        case question(String)
+        case question(AgentQuestion)
+        /// The terminal accepted the response to a preceding function call.
+        case functionAnswered
         /// Codex's own approval policy for the session.
         case approvalPolicy(PermissionMode)
     }
@@ -147,9 +149,17 @@ enum CodexRolloutParser {
         case "function_call":
             guard let name = payload["name"] as? String else { return nil }
             if name == "request_user_input" {
-                return .question(question(in: payload["arguments"] as? String) ?? "Codex is waiting for your answer")
+                guard let question = question(in: payload["arguments"] as? String) else { return nil }
+                return .question(question)
             }
             return nil
+
+        case "function_call_output":
+            // `request_user_input` returns an answers object. Other function calls
+            // also produce this record type and must not dismiss an active card.
+            guard let output = payload["output"] as? String,
+                  output.contains("\"answers\"") else { return nil }
+            return .functionAnswered
 
         default:
             return nil
@@ -159,14 +169,11 @@ enum CodexRolloutParser {
     /// Extracts the first visible question from Codex's JSON-encoded arguments.
     /// Keeping the text means the island says what needs attention, while clicking
     /// the row returns to Codex's native option picker to answer it.
-    static func question(in arguments: String?) -> String? {
+    static func question(in arguments: String?) -> AgentQuestion? {
         guard let arguments,
               let data = arguments.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let questions = root["questions"] as? [[String: Any]],
-              let text = questions.first?["question"] as? String,
-              !text.isEmpty else { return nil }
-        return text
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
+        return AgentQuestion.parse(value)
     }
 
     // MARK: - Digging values out of free text

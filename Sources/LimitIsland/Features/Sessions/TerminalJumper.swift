@@ -15,6 +15,97 @@ enum JumpResolution: Equatable {
 /// returns a result so the island closes only after a real jump succeeds.
 @MainActor
 enum TerminalJumper {
+    /// Answers a recognized Codex single-choice picker. The exact destination is
+    /// focused first; failure to prove it aborts without emitting a key.
+    static func answerCodexChoice(_ option: Int, in session: AgentSession) -> JumpResolution {
+        answerCodexSelection([option], multiSelect: false, in: session) ? .jumped : .stale
+    }
+
+    /// Sends one complete Codex picker answer to the exact terminal surface. A
+    /// multi-select picker toggles each chosen row before submitting; a normal
+    /// picker moves to its chosen row and submits directly.
+    static func answerCodexSelection(
+        _ options: [Int], multiSelect: Bool, in session: AgentSession
+    ) -> Bool {
+        let choices = Array(Set(options)).sorted()
+        guard !choices.isEmpty, choices.allSatisfy({ $0 >= 0 }),
+              let terminal = session.terminal else { return false }
+        let focus = jump(to: session)
+        guard focus == .jumped else { return false }
+
+        let keys = pickerKeys(choices, multiSelect: multiSelect)
+
+        if let pane = terminal.tmuxPane {
+            guard let executable = tool("tmux", fallback: "/usr/local/bin/tmux") else { return false }
+            var prefix: [String] = []
+            if let socket = terminal.tmuxSocket { prefix = ["-S", socket] }
+            return keys.allSatisfy {
+                commandSucceeded(executable, prefix + ["send-keys", "-t", pane, $0.tmuxName])
+            }
+        }
+        if let pane = terminal.weztermPane,
+           let executable = tool("wezterm", fallback: "/Applications/WezTerm.app/Contents/MacOS/wezterm") {
+            let text = keys.map(\.terminalText).joined()
+            return commandSucceeded(executable, ["cli", "send-text", "--no-paste", "--pane-id", pane, text])
+        }
+        if let id = terminal.kittyWindowID, let socket = terminal.kittyListenOn,
+           let executable = tool("kitten", fallback: "/Applications/kitty.app/Contents/MacOS/kitten") {
+            return keys.allSatisfy {
+                commandSucceeded(executable, ["@", "--to", socket, "send-key", "--match", "id:\(id)", $0.kittyName])
+            }
+        }
+        if normalized(terminal.program) == "ghostty", let destination = session.selectedDestination {
+            let strokes = keys.map { "send key \"\($0.ghosttyName)\" to t" }.joined(separator: "\n")
+            let result = runAppleScript("""
+            tell application "Ghostty"
+                repeat with t in terminals
+                    if id of t as text is "\(escaped(destination.stableID))" then
+                        focus t
+                        \(strokes)
+                        return "ok"
+                    end if
+                end repeat
+            end tell
+            return "miss"
+            """)
+            return result.succeeded && result.output == "ok"
+        }
+
+        // Terminal and iTerm have no targeted input API. Accessibility supplies
+        // arrows only after the exact-tab jump above has made the terminal active.
+        let appName = normalized(terminal.program) == "iterm" ? "iTerm" : "Terminal"
+        let strokes = keys.map { "key code \($0.appleKeyCode)" }.joined(separator: "\n")
+        let result = runAppleScript("""
+        tell application "System Events"
+            if name of first application process whose frontmost is true is not "\(appName)" then return "miss"
+            \(strokes)
+        end tell
+        return "ok"
+        """)
+        return result.succeeded && result.output == "ok"
+    }
+
+    private enum PickerKey {
+        case down, toggle, submit
+        var tmuxName: String { switch self { case .down: "Down"; case .toggle: "Space"; case .submit: "Enter" } }
+        var kittyName: String { switch self { case .down: "down"; case .toggle: "space"; case .submit: "enter" } }
+        var ghosttyName: String { switch self { case .down: "down"; case .toggle: "space"; case .submit: "enter" } }
+        var terminalText: String { switch self { case .down: "\u{1B}[B"; case .toggle: " "; case .submit: "\r" } }
+        var appleKeyCode: Int { switch self { case .down: 125; case .toggle: 49; case .submit: 36 } }
+    }
+
+    private static func pickerKeys(_ choices: [Int], multiSelect: Bool) -> [PickerKey] {
+        guard multiSelect else { return Array(repeating: .down, count: choices[0]) + [.submit] }
+        var keys: [PickerKey] = []
+        var row = 0
+        for choice in choices {
+            keys += Array(repeating: .down, count: choice - row)
+            keys.append(.toggle)
+            row = choice
+        }
+        keys.append(.submit)
+        return keys
+    }
     static func jump(to session: AgentSession) -> JumpResolution {
         guard let terminal = session.terminal else { return .stale }
 

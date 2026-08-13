@@ -123,6 +123,23 @@ struct HookProtocolTests {
         #expect(decision["behavior"] as? String == "allow")
     }
 
+    @Test("Question answers preserve questions and add updated answers")
+    func questionAnswerShape() throws {
+        let input: JSONValue = .object([
+            "questions": .array([.object([
+                "question": .string("Which target?"), "header": .string("Target"),
+                "options": .array([.object(["label": .string("Production")])])
+            ])]),
+            "answers": .object(["Which target?": .string("Production")])
+        ])
+        let text = HookReply(decision: .allow, updatedInput: input).serialised(reason: nil)
+        let root = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        let specific = try #require(root["hookSpecificOutput"] as? [String: Any])
+        let updated = try #require(specific["updatedInput"] as? [String: Any])
+        let answers = try #require(updated["answers"] as? [String: Any])
+        #expect(answers["Which target?"] as? String == "Production")
+    }
+
     @Test("Permission modes are read from the payload, and an unknown one asks")
     func permissionModes() throws {
         func mode(_ raw: String) throws -> PermissionMode {

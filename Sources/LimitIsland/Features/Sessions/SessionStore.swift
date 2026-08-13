@@ -10,10 +10,28 @@ import Observation
 @MainActor
 @Observable
 final class SessionStore {
+    struct CodexQuestionState: Equatable {
+        let question: AgentQuestion
+        let receivedAt: Date
+    }
+
+    enum ActiveInteraction {
+        case pending(PendingRequest)
+        case codex(session: AgentSession, state: CodexQuestionState)
+
+        var id: String {
+            switch self {
+            case let .pending(request): "pending-\(request.id.uuidString)"
+            case let .codex(session, _): "codex-\(session.id)"
+            }
+        }
+    }
+
     /// Ordered for the panel: anything waiting on the person first, then by most
     /// recent activity.
     private(set) var sessions: [AgentSession] = []
     private(set) var pending: [PendingRequest] = []
+    private(set) var codexQuestions: [String: CodexQuestionState] = [:]
     /// Bumped once a second so `elapsed` strings stay honest.
     private(set) var tick: Int = 0
 
@@ -135,6 +153,7 @@ final class SessionStore {
         case "SessionEnd":
             resolvePending(sessionID: sessionID, tool: nil)
             sessions.removeAll { $0.id == sessionID }
+            codexQuestions[sessionID] = nil
         default:
             break
         }
@@ -144,6 +163,12 @@ final class SessionStore {
     private func handlePreToolUse(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
         guard let tool = event.toolName else { return (.noOpinion, nil) }
         update(sessionID) { $0.activity = .running(ToolSummary.activity(tool: tool, input: event.toolInput)) }
+
+        // AskUserQuestion does not require Claude's normal permission prompt, but
+        // its PreToolUse hook can still block and return the completed answers.
+        if tool == "AskUserQuestion", AgentQuestion.parse(event.toolInput) != nil {
+            return await decide(event, sessionID: sessionID, tool: tool)
+        }
 
         guard shouldIntercept(tool: tool) else { return (.noOpinion, nil) }
 
@@ -215,7 +240,7 @@ final class SessionStore {
         }
 
         pending.removeAll { $0.sessionID == sessionID && $0.tool == tool }
-        update(sessionID) { $0.activity = .thinking }
+        if tool != "AskUserQuestion" { update(sessionID) { $0.activity = .thinking } }
         return answer
     }
 
@@ -235,22 +260,29 @@ final class SessionStore {
             guard source != .subagent else { return }
             insertIfNeeded(id, provider: .openAI, directory: directory ?? update.workingDirectory)
         case let .prompt(text):
+            clearCodexQuestion(id, activity: .thinking)
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)
             self.update(id) {
                 $0.lastPrompt = text
                 $0.activity = .thinking
             }
         case .turnStarted:
+            clearCodexQuestion(id, activity: .thinking)
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)
             self.update(id) { $0.activity = .thinking }
         case .turnCompleted:
+            codexQuestions[id] = nil
             self.update(id) { $0.activity = .done }
         case let .activity(what):
+            codexQuestions[id] = nil
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)
             self.update(id) { $0.activity = .running(what) }
-        case let .question(text):
+        case let .question(question):
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)
-            self.update(id) { $0.activity = .waitingInTerminal(text) }
+            codexQuestions[id] = CodexQuestionState(question: question, receivedAt: .now)
+            self.update(id) { $0.activity = .waitingInTerminal(question.items.first?.question ?? "Codex is waiting") }
+        case .functionAnswered:
+            clearCodexQuestion(id, activity: .thinking)
         case let .approvalPolicy(mode):
             codexModes[id] = mode
             if mode.isAutomatic { allowPendingForAutoMode(sessionID: id) }
@@ -270,6 +302,33 @@ final class SessionStore {
         guard codexModes[sessionID] != .bypass else { return (.noOpinion, nil) }
         return await decide(event, sessionID: sessionID, tool: tool)
     }
+
+    func dismissCodexQuestion(sessionID: String) {
+        clearCodexQuestion(sessionID, activity: .thinking)
+    }
+
+    private func clearCodexQuestion(_ sessionID: String, activity: SessionActivity) {
+        guard codexQuestions.removeValue(forKey: sessionID) != nil else { return }
+        update(sessionID) { $0.activity = activity }
+    }
+
+    /// One interaction is actionable at a time. Comparing the time each request
+    /// actually arrived keeps multiple agents in a predictable first-in-first-out
+    /// queue instead of letting a recently active session jump the line.
+    var activeInteraction: ActiveInteraction? {
+        let firstPending = pending.min { $0.receivedAt < $1.receivedAt }
+        let firstCodex = codexQuestions.min { $0.value.receivedAt < $1.value.receivedAt }
+
+        if let firstPending,
+           firstCodex == nil || firstPending.receivedAt <= firstCodex!.value.receivedAt {
+            return .pending(firstPending)
+        }
+        guard let firstCodex,
+              let session = session(id: firstCodex.key) else { return nil }
+        return .codex(session: session, state: firstCodex.value)
+    }
+
+    var waitingInteractionCount: Int { pending.count + codexQuestions.count }
 
     /// The terminal a Codex session is running in, learned from its `notify` hook —
     /// rollout files do not record the environment. Prefer the notify payload's
@@ -340,6 +399,7 @@ final class SessionStore {
     func removeSession(_ sessionID: String) {
         resolvePending(sessionID: sessionID, tool: nil)
         sessions.removeAll { $0.id == sessionID }
+        codexQuestions[sessionID] = nil
     }
 
     func session(id: String) -> AgentSession? {
@@ -362,6 +422,13 @@ final class SessionStore {
         guard request.isResolved else { return }
         Log.hooks.info("denied \(request.tool, privacy: .public) for \(request.sessionID, privacy: .public)")
         pending.removeAll { $0.id == request.id }
+    }
+
+    func answer(_ request: PendingRequest, answers: [String: String]) {
+        request.answer(answers)
+        guard request.isResolved else { return }
+        pending.removeAll { $0.id == request.id }
+        update(request.sessionID) { $0.activity = .thinking }
     }
 
     /// Dismisses a card without answering: the CLI's own prompt takes over.
@@ -438,6 +505,7 @@ final class SessionStore {
             if retained.project == nil { retained.project = stale.project }
             if retained.terminal == nil { retained.terminal = stale.terminal }
             retained.startedAt = min(retained.startedAt, stale.startedAt)
+            codexQuestions[stale.id] = nil
             resolvePending(sessionID: stale.id, tool: nil)
         }
         let duplicateIDs = Set(duplicates.map { sessions[$0].id })

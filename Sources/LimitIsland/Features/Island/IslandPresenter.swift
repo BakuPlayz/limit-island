@@ -23,6 +23,9 @@ final class IslandPresenter {
 
     var presentation: IslandPresentation = .strip
     var jumpSheet: JumpSheet?
+    var questionShortcut: ((Int) -> Void)?
+    /// Ideal height of the active interaction, measured by SwiftUI after layout.
+    var interactionHeight: CGFloat = 0
 
     /// Width of the physical camera housing on the active display.
     var notchWidth: CGFloat = 0

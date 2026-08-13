@@ -59,9 +59,20 @@ struct CodexRolloutParserTests {
 
     @Test("A Codex question becomes a waiting prompt with its visible text")
     func question() {
-        let line = #"{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"question\":\"Which side should it use?\"}]}"}}"#
-        #expect(record(line) == .question("Which side should it use?"))
+        let line = #"{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"header\":\"Side\",\"question\":\"Which side should it use?\",\"options\":[{\"label\":\"Left\",\"description\":\"Use left\"},{\"label\":\"Right\",\"description\":\"Use right\"}],\"multiSelect\":false}]}"}}"#
+        let question = AgentQuestion(items: [.init(
+            question: "Which side should it use?", header: "Side",
+            options: [.init(label: "Left", description: "Use left"), .init(label: "Right", description: "Use right")],
+            multiSelect: false
+        )])
+        #expect(record(line) == .question(question))
         #expect(CodexRolloutParser.question(in: "{}") == nil)
+    }
+
+    @Test("A function output proves the terminal answered a question")
+    func functionAnswer() {
+        #expect(record(#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_question","output":"{\"answers\":{\"Choose\":{\"answers\":[\"One\"]}}}"}}"#) == .functionAnswered)
+        #expect(record(#"{"type":"response_item","payload":{"type":"function_call_output","output":"{}"}}"#) == nil)
     }
 
     @Test("A patch summary names the file, or counts them")
