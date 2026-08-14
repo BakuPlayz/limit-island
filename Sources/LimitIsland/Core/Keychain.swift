@@ -74,6 +74,16 @@ enum Keychain {
         return result as? Data
     }
 
+    /// Items written here hold provider tokens — our own Gemini credential and the
+    /// broker's mirror of a CLI's — so they are marked `WhenUnlocked` rather than
+    /// `AfterFirstUnlock`: there is no background work that needs to read a token
+    /// while the Mac is locked. The attribute is set on the update path too, so an
+    /// item written by an earlier version is upgraded the next time it is touched
+    /// rather than keeping the weaker setting forever.
+    ///
+    /// Worth being plain about the limit: on a file-based login keychain macOS does
+    /// not enforce accessibility the way iOS data protection does. This narrows the
+    /// window, it does not seal it.
     @discardableResult
     static func set(_ data: Data, service: String, account: String) -> Bool {
         let identity: [CFString: Any] = [
@@ -81,12 +91,16 @@ enum Keychain {
             kSecAttrService: service,
             kSecAttrAccount: account
         ]
-        let update = SecItemUpdate(identity as CFDictionary, [kSecValueData: data] as CFDictionary)
+        let changes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked
+        ]
+        let update = SecItemUpdate(identity as CFDictionary, changes as CFDictionary)
         if update == errSecSuccess { return true }
 
         var insert = identity
         insert[kSecValueData] = data
-        insert[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        insert[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlocked
         let status = SecItemAdd(insert as CFDictionary, nil)
         if status != errSecSuccess {
             Log.auth.error("keychain write \(service, privacy: .public) failed: \(status)")

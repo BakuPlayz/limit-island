@@ -42,6 +42,21 @@ cp "$BIN_PATH" "$APP_PATH/Contents/MacOS/LimitIsland"
 cp "$BIN_DIR/limitisland-hook" "$APP_PATH/Contents/Helpers/limitisland-hook"
 cp "$ROOT_DIR/Scripts/Info.plist" "$APP_PATH/Contents/Info.plist"
 
+# Optional: run the Google sign-in as your own OAuth client instead of the public
+# one the Gemini CLI ships. The keys go into the *copy* only, so a private client
+# never reaches the tracked plist and cannot be committed. Unset is the normal
+# case — the app falls back to the bundled public client.
+plist_set() {
+	/usr/libexec/PlistBuddy -c "Add :$1 string $2" "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1 || \
+		/usr/libexec/PlistBuddy -c "Set :$1 $2" "$APP_PATH/Contents/Info.plist" >/dev/null
+}
+if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
+	plist_set GoogleOAuthClientID "$GOOGLE_OAUTH_CLIENT_ID"
+fi
+if [[ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+	plist_set GoogleOAuthClientSecret "$GOOGLE_OAUTH_CLIENT_SECRET"
+fi
+
 # Keep SwiftPM's processed resource bundle with the packaged executable. Replace
 # rather than merge — copying into an existing bundle never prunes, which is how
 # a resource deleted from the source tree stayed in the shipped app for months.

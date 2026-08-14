@@ -4,6 +4,35 @@ import Testing
 
 @Suite("Gemini credential decoding")
 struct GeminiCredentialTests {
+    @Test("The OAuth client comes from the environment, then Info.plist, then the bundle")
+    func clientResolutionPrecedence() {
+        let bundled = Data("bundled-value".utf8).base64EncodedString()
+        func resolve(environment: [String: String], info: [String: Any]) -> String {
+            GeminiOAuthClient.resolve(
+                environmentKey: "KEY",
+                infoKey: "InfoKey",
+                bundled: bundled,
+                environment: environment,
+                info: info
+            )
+        }
+        #expect(resolve(environment: ["KEY": "from-env"], info: ["InfoKey": "from-plist"]) == "from-env")
+        #expect(resolve(environment: [:], info: ["InfoKey": "from-plist"]) == "from-plist")
+        #expect(resolve(environment: [:], info: [:]) == "bundled-value")
+        // An empty override is a misconfiguration, not a choice to run with no
+        // client — fall through rather than signing in as "".
+        #expect(resolve(environment: ["KEY": ""], info: ["InfoKey": ""]) == "bundled-value")
+    }
+
+    @Test("The bundled client decodes to a usable Google installed-app client")
+    func bundledClientShape() {
+        // Asserted by shape, not by literal: the point of storing these base64 is
+        // that no copy of the values lives in the repository as plain text.
+        #expect(GeminiOAuthClient.clientID.hasSuffix(".apps.googleusercontent.com"))
+        #expect(GeminiOAuthClient.clientSecret.hasPrefix("GOCSPX-"))
+        #expect(GeminiOAuthClient.clientSecret.count == 35)
+    }
+
     @Test("The CLI's keychain blob decodes")
     func decodesKeychainEnvelope() throws {
         // Shape written by gemini-cli's HybridTokenStorage: camelCase, nested

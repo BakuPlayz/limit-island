@@ -289,6 +289,21 @@ make test    # run the test suite (needs Xcode)
 make clean   # remove the app bundle and .build
 ```
 
+### Google OAuth client
+
+The Gemini sign-in runs as the public installed-app client that the Gemini CLI
+itself ships — that is what makes its Code Assist quota readable, and it needs no
+setup. To run as your own client instead, set either pair before building:
+
+```sh
+GOOGLE_OAUTH_CLIENT_ID=… GOOGLE_OAUTH_CLIENT_SECRET=… make app
+```
+
+`make app` writes those into the built bundle's `Info.plist` only, never into
+`Scripts/Info.plist`, so a private client cannot be committed. For a plain
+`swift run`, use `LIMIT_ISLAND_GOOGLE_CLIENT_ID` / `LIMIT_ISLAND_GOOGLE_CLIENT_SECRET`
+in the environment, which take precedence over both.
+
 ### Source layout
 
 ```

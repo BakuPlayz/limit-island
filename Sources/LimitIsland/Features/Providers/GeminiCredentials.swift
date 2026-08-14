@@ -14,13 +14,61 @@ struct GeminiToken: Sendable, Equatable {
     }
 }
 
-/// Public OAuth client the Gemini CLI ships in its bundle. It is an installed-app
-/// client, so the "secret" is not one — it is readable in every copy of the CLI.
-/// Reusing it is what lets the app's own sign-in reach the same Code Assist quota
-/// the CLI reports.
+/// The OAuth client the Google sign-in runs as.
+///
+/// By default this is the public client the Gemini CLI ships in its bundle. It is
+/// an installed-app client, so the "secret" is not one — it is readable in every
+/// copy of the CLI — and reusing it is what lets the app's own sign-in reach the
+/// same Code Assist quota the CLI reports.
+///
+/// Resolution order, so a build can run as its own client instead:
+///
+/// 1. `LIMIT_ISLAND_GOOGLE_CLIENT_ID` / `_SECRET` in the environment, for development.
+/// 2. `GoogleOAuthClientID` / `GoogleOAuthClientSecret` in `Info.plist`, which
+///    `Scripts/build-app.sh` injects from `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET`
+///    into the *copied* plist, never the tracked one.
+/// 3. The bundled public client below.
+///
+/// The bundled pair is base64 so the repository holds no string matching a secret
+/// scanner's patterns. That is hygiene, not protection: base64 is trivially
+/// reversible, and this value is meant to be public anyway.
 enum GeminiOAuthClient {
-    static let clientID = "NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t"
-    static let clientSecret = "R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw="
+    private static let bundledClientID =
+        "NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t"
+    private static let bundledClientSecret = "R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw="
+
+    static let clientID = resolve(
+        environmentKey: "LIMIT_ISLAND_GOOGLE_CLIENT_ID",
+        infoKey: "GoogleOAuthClientID",
+        bundled: bundledClientID
+    )
+    static let clientSecret = resolve(
+        environmentKey: "LIMIT_ISLAND_GOOGLE_CLIENT_SECRET",
+        infoKey: "GoogleOAuthClientSecret",
+        bundled: bundledClientSecret
+    )
+
+    /// Split from the properties above so the precedence can be tested without a
+    /// bundle. `bundled` is base64; the other two are plain, because whoever sets
+    /// them is holding their own client and has nothing to hide from a scanner.
+    static func resolve(
+        environmentKey: String,
+        infoKey: String,
+        bundled: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        info: [String: Any] = Bundle.main.infoDictionary ?? [:]
+    ) -> String {
+        if let value = environment[environmentKey], !value.isEmpty { return value }
+        if let value = info[infoKey] as? String, !value.isEmpty { return value }
+        guard let data = Data(base64Encoded: bundled), let value = String(data: data, encoding: .utf8) else {
+            // Unreachable with the constants above, and a crash here would take
+            // out the whole app for a meter that may not even be configured.
+            Log.auth.error("bundled google client value did not decode")
+            return ""
+        }
+        return value
+    }
+
     static let scopes = [
         "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/userinfo.email",

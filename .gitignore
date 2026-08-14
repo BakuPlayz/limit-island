@@ -1,2 +1,11 @@
 /.build
 /LimitIsland.app
+
+# Nothing here is expected in the tree; these are guards so a stray credential
+# file cannot be committed by accident.
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+.DS_Store
