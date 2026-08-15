@@ -231,14 +231,17 @@ private struct QuestionChoices: View {
                 .padding(8)
             }
             if item.multiSelect {
-                PressSurface(isEnabled: isEnabled && !selected.isEmpty, action: { advance(item) }) {
+                PressSurface(
+                    isEnabled: isEnabled && !selected.isEmpty,
+                    fill: provider.color,
+                    action: { advance(item) }
+                ) {
                     Text("Continue")
                         .islandFont(size: 12, weight: .semibold)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
                         .foregroundStyle(.black)
                 }
-                .tint(provider.color)
             }
         }
         .onAppear { publish(item) }
@@ -277,8 +280,18 @@ private struct QuestionChoices: View {
     private func advance(_ item: AgentQuestion.Item) {
         guard !selected.isEmpty else { return }
         answers[item.question] = selected.sorted().joined(separator: ", ")
+        selections[index] = selected
         selected.removeAll()
         if index + 1 < question.items.count { index += 1 } else { onSubmit(answers) }
+    }
+
+    /// Nothing has been sent to the agent until the last question is answered, so
+    /// an earlier answer is still the person's to change.
+    private func goBack() {
+        guard index > 0 else { return }
+        selections[index] = selected
+        index -= 1
+        selected = selections[index] ?? []
     }
 
     private func publish(_ item: AgentQuestion.Item) {
@@ -381,14 +394,17 @@ struct CodexQuestionCard: View {
                 }
 
                 if item.multiSelect {
-                    PressSurface(isEnabled: !selected.isEmpty, action: { submit(item) }) {
+                    PressSurface(
+                        isEnabled: !selected.isEmpty,
+                        fill: Provider.openAI.color,
+                        action: { submit(item) }
+                    ) {
                         Text("Continue")
                             .islandFont(size: 12, weight: .semibold)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 7)
                             .foregroundStyle(.black)
                     }
-                    .tint(Provider.openAI.color)
                 }
                 }
 
@@ -457,6 +473,12 @@ struct CodexQuestionCard: View {
 private struct PressSurface<Label: View>: View {
     var isEnabled = true
     var isSelected = false
+    /// A solid colour for a primary action. Without it the surface is the faint
+    /// translucent white the option rows use, which dark label text disappears into.
+    var fill: Color? = nil
+    /// False for a control that should be only as wide as its label, such as the
+    /// Back pill in a question header.
+    var expands = true
     let action: () -> Void
     @ViewBuilder let label: () -> Label
     @State private var isPressed = false
@@ -464,7 +486,7 @@ private struct PressSurface<Label: View>: View {
 
     var body: some View {
         label()
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: expands ? .infinity : nil, alignment: .leading)
         .background(background, in: RoundedRectangle(cornerRadius: 7))
         .contentShape(RoundedRectangle(cornerRadius: 7))
         .gesture(
@@ -486,6 +508,10 @@ private struct PressSurface<Label: View>: View {
     }
 
     private var background: Color {
+        if let fill {
+            if isPressed { return fill.opacity(0.7) }
+            return isHovered && isEnabled ? fill : fill.opacity(0.9)
+        }
         if isPressed { return Color.accentColor.opacity(0.55) }
         if isSelected { return Color.accentColor.opacity(0.25) }
         if isHovered && isEnabled { return .white.opacity(0.14) }
