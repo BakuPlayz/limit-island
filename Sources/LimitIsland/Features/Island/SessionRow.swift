@@ -24,6 +24,27 @@ struct SessionDot: View {
     }
 }
 
+/// Which agent a session belongs to, and what it is doing: the provider's logo
+/// with the status dot tucked into its corner.
+///
+/// The logo leads because that is what a person scanning the list recognises first,
+/// but the dot cannot go with it — colour and pulse are the only thing that
+/// distinguishes a session waiting on the person from one still working. The dot
+/// keeps a dark ring so amber stays legible over the logo underneath it.
+struct SessionBadge: View {
+    let session: AgentSession
+
+    var body: some View {
+        ProviderLogo(provider: session.provider, size: 15)
+            .overlay(alignment: .bottomTrailing) {
+                SessionDot(session: session, size: 6)
+                    .padding(1)
+                    .background(Color(red: 0.15, green: 0.16, blue: 0.18), in: Circle())
+                    .offset(x: 3, y: 2)
+            }
+    }
+}
+
 /// A slow pulse behind a dot that needs attention. Reduce Motion gets a static
 /// halo instead — the dot must still stand out, just without moving.
 private struct BreathingHalo: ViewModifier {
@@ -66,7 +87,7 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            SessionDot(session: session, size: 8)
+            SessionBadge(session: session)
                 .padding(.leading, 2)
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -84,7 +105,6 @@ struct SessionRow: View {
 
                 Spacer(minLength: 8)
 
-                badge(session.provider.title)
                 if let terminal = session.terminal {
                     badge(terminal.displayName)
                 }
