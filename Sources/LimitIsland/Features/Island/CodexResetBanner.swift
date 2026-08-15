@@ -34,12 +34,6 @@ struct CodexResetBanner: View {
 
             Spacer(minLength: 8)
 
-            if let days = forecast.daysSinceReset {
-                Text("\(days)d since last reset")
-                    .islandFont(size: 9.5, weight: .medium)
-                    .foregroundStyle(.white.opacity(0.45))
-            }
-
             // Its own hit area rather than a button: the surrounding row opens the
             // site, and dismissing must not do both.
             Image(systemName: "xmark")
@@ -73,9 +67,14 @@ struct CodexResetBanner: View {
         .help(helpText)
     }
 
+    /// Everything that did not fit on two lines. The days since the last reset lived
+    /// in the row until it pushed the caveat off the end of its own sentence, and a
+    /// hedge that gets truncated is worse than no hedge.
     private var helpText: String {
-        let source = "willcodexquotareset.com"
-        guard !forecast.breakdown.isEmpty else { return source }
-        return "\(forecast.breakdownSummary) · \(source)"
+        var parts: [String] = []
+        if let days = forecast.daysSinceReset { parts.append("\(days)d since last reset") }
+        if !forecast.breakdown.isEmpty { parts.append(forecast.breakdownSummary) }
+        parts.append("willcodexquotareset.com")
+        return parts.joined(separator: " · ")
     }
 }
