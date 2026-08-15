@@ -5,6 +5,9 @@ import SwiftUI
 struct PermissionCard: View {
     let request: PendingRequest
     var queueCount = 1
+    /// Project directory basename of the asking session — what a person recognises
+    /// the agent by when several are running.
+    var project: String? = nil
     let onAllow: () -> Void
     let onDeny: () -> Void
     var onAnswer: ([String: String]) -> Void = { _ in }
@@ -18,21 +21,17 @@ struct PermissionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(Color(red: 1.0, green: 0.62, blue: 0.25))
-                    .frame(width: 6, height: 6)
-                Text(cardTitle)
+                ProviderLogo(provider: request.provider, size: 12)
+                Text(headerTitle)
                     .islandFont(size: 10.5, weight: .medium)
                     .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
                 Spacer()
                 if queueCount > 1 {
                     Text("1 of \(queueCount)")
                         .islandFont(size: 9.5, weight: .medium)
                         .foregroundStyle(.white.opacity(0.45))
                 }
-                Text(request.provider.title)
-                    .islandFont(size: 9.5, weight: .medium)
-                    .foregroundStyle(.white.opacity(0.45))
             }
 
             if case .question = request.kind { EmptyView() } else { HStack(spacing: 6) {
@@ -87,13 +86,11 @@ struct PermissionCard: View {
         }
     }
 
-    private var cardTitle: String {
-        switch request.kind {
-        case .question: "\(request.provider.title) asks"
-        case .plan: "Plan ready"
-        case .edit: "Review changes"
-        case .general: "Approval needed"
-        }
+    /// Which agent is asking, not what it is asking: the project a person knows the
+    /// session by, and only the provider's name when the session has no directory.
+    private var headerTitle: String {
+        guard let project, !project.isEmpty else { return request.provider.title }
+        return project
     }
 
     private var humanAction: String {
@@ -193,14 +190,28 @@ private struct QuestionChoices: View {
     @State private var index = 0
     @State private var selected: Set<String> = []
     @State private var answers: [String: String] = [:]
+    /// What was ticked on each question already passed, so stepping back shows the
+    /// earlier answer to change rather than an empty list.
+    @State private var selections: [Int: Set<String>] = [:]
 
     var body: some View {
         let item = question.items[index]
         VStack(alignment: .leading, spacing: 7) {
-            HStack {
+            HStack(spacing: 6) {
                 Image(systemName: "message.fill")
                 Text("\(provider.title) asks").fontWeight(.semibold)
                 Spacer()
+                if index > 0 {
+                    PressSurface(expands: false, action: goBack) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .islandFont(size: 9.5, weight: .medium)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                    }
+                }
                 if question.items.count > 1 { Text("\(index + 1) of \(question.items.count)") }
             }
             .islandFont(size: 10.5, weight: .medium)

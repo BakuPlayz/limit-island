@@ -254,6 +254,7 @@ struct IslandContent: View {
             PermissionCard(
                 request: request,
                 queueCount: sessions.waitingInteractionCount,
+                project: sessions.session(id: request.sessionID)?.project,
                 onAllow: { sessions.allow(request) },
                 onDeny: { sessions.deny(request) },
                 onAnswer: { sessions.answer(request, answers: $0) },
