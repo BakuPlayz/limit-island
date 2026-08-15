@@ -42,6 +42,7 @@ private final class NeverKeyPanel: NSPanel {
 final class IslandWindowController: NSObject {
     private let quota: QuotaStore
     private let sessions: SessionStore
+    private let codexReset: CodexResetStore
     private let presenter = IslandPresenter()
     private let panel = IslandWindowController.makePanel()
     private var cancellables = Set<AnyCancellable>()
@@ -62,9 +63,10 @@ final class IslandWindowController: NSObject {
     /// Installed only while the panel is open, so a click anywhere else closes it.
     private var outsideClickMonitor: Any?
 
-    init(quota: QuotaStore, sessions: SessionStore) {
+    init(quota: QuotaStore, sessions: SessionStore, codexReset: CodexResetStore) {
         self.quota = quota
         self.sessions = sessions
+        self.codexReset = codexReset
         super.init()
 
         presenter.refreshHookState()
@@ -74,12 +76,17 @@ final class IslandWindowController: NSObject {
         panel.contentView = NSHostingView(rootView: IslandContent(
             quota: quota,
             sessions: sessions,
+            codexReset: codexReset,
             presenter: presenter,
             onToggle: { [weak self] in self?.toggle() },
             onJump: { [weak self] session in
                 self?.handleJump(session)
             }
         ))
+
+        // Not a Combine publisher like the quota stores: this one is `@Observable`,
+        // which SwiftUI follows on its own but the window frame does not.
+        codexReset.onChange = { [weak self] in self?.position() }
 
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.position() }
@@ -331,9 +338,16 @@ final class IslandWindowController: NSObject {
 
     private var contentRowCount: Int {
         switch presenter.jumpSheet {
-        case let .chooser(_, destinations): max(2, destinations.count + 1)
-        case .automation, .setup, .notice: 2
-        case nil: sessions.activeInteraction == nil ? sessions.sessions.count : 0
+        case let .chooser(_, destinations): return max(2, destinations.count + 1)
+        case .automation, .setup, .notice: return 2
+        case nil:
+            guard sessions.activeInteraction == nil else { return 0 }
+            // The reset banner is a row of the same height, and the list keeps its
+            // empty-state row underneath it.
+            guard codexReset.shouldPrompt(hasCodexAccount: quota.hasCodexAccount) else {
+                return sessions.sessions.count
+            }
+            return max(sessions.sessions.count, 1) + 1
         }
     }
 

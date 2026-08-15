@@ -18,6 +18,7 @@ enum IslandPresentation: Equatable {
 struct IslandContent: View {
     @ObservedObject var quota: QuotaStore
     let sessions: SessionStore
+    let codexReset: CodexResetStore
     let presenter: IslandPresenter
     let onToggle: () -> Void
     let onJump: (AgentSession) -> Void
@@ -190,7 +191,7 @@ struct IslandContent: View {
             .padding(.horizontal, 12)
             .frame(height: presenter.headerHeight)
 
-            if !sessions.sessions.isEmpty || !sessions.pending.isEmpty {
+            if !sessions.sessions.isEmpty || !sessions.pending.isEmpty || showsCodexResetBanner {
                 content
             }
         }
@@ -201,6 +202,13 @@ struct IslandContent: View {
             RoundedRectangle(cornerRadius: NotchLayout.panelCornerRadius)
                 .stroke(.white.opacity(0.09), lineWidth: 1)
         )
+    }
+
+    /// The forecast is about Codex quota, so it is noise to anyone without a Codex
+    /// account, and it never covers a card or a sheet the person is answering.
+    private var showsCodexResetBanner: Bool {
+        guard sessions.activeInteraction == nil, presenter.jumpSheet == nil else { return false }
+        return codexReset.shouldPrompt(hasCodexAccount: quota.hasCodexAccount)
     }
 
     @ViewBuilder
@@ -233,6 +241,11 @@ struct IslandContent: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    // Above the sessions rather than inside them: it is about the
+                    // account, not about any one agent.
+                    if showsCodexResetBanner, let forecast = codexReset.forecast {
+                        CodexResetBanner(forecast: forecast) { codexReset.dismiss() }
+                    }
                     if sessions.sessions.isEmpty {
                             emptyState
                     } else {

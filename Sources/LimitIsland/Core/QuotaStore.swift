@@ -106,6 +106,11 @@ final class QuotaStore: ObservableObject {
         meter(id: leftPinnedMeterID)
     }
 
+    /// Whether anything Codex-specific is worth showing this person at all.
+    var hasCodexAccount: Bool {
+        meters.contains { $0.provider == .openAI }
+    }
+
     /// The closed strip shows only explicitly pinned accounts. This keeps the two
     /// physical sides stable instead of making a fallback appear on one side.
     var rightStripMeter: Meter? {
