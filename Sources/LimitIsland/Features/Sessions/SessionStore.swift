@@ -490,7 +490,10 @@ final class SessionStore {
                 sessions[index].project = (directory as NSString).lastPathComponent
             }
             reorder()
-            if event.provider == .openAI { coalesceSessions(preferredID: id) }
+            // Only with a live PID in hand: the weaker pane and TTY identities are
+            // for restored Codex rows, and a hook-fed session that fell back to one
+            // of those could swallow a genuinely separate agent in the same pane.
+            if terminal.agentPID != nil { coalesceSessions(preferredID: id) }
             return
         }
         sessions.insert(
@@ -506,12 +509,14 @@ final class SessionStore {
             ),
             at: 0
         )
-        if event.provider == .openAI { coalesceSessions(preferredID: id) }
+        if terminal.agentPID != nil { coalesceSessions(preferredID: id) }
     }
 
     /// Coalesces only exact runtime identities. Matching titles or projects are
     /// intentionally irrelevant: two agents doing the same work in separate panes
-    /// are two sessions and both remain visible.
+    /// are two sessions and both remain visible. What this does catch is one agent
+    /// that changed session id in place — a resume, or `/clear` — which would
+    /// otherwise leave its previous row on screen for as long as the panel is open.
     private func coalesceSessions(preferredID: String) {
         guard let preferredIndex = sessions.firstIndex(where: { $0.id == preferredID }),
               let identity = sessions[preferredIndex].terminal?.stableIdentity else { return }

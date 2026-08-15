@@ -9,7 +9,11 @@ struct SessionStoreTests {
         _ name: String,
         session: String = "s1",
         payload: [String: Any] = [:],
-        cli: String = "claude"
+        cli: String = "claude",
+        // The second entry is the CLI itself, which is what gives the session a
+        // process identity. Left out by default: most tests want rows that stay
+        // distinct rather than coalescing on a shared TTY.
+        pids: [Int32] = [1]
     ) throws -> HookEvent {
         var body = payload
         body["session_id"] = session
@@ -18,7 +22,7 @@ struct SessionStoreTests {
             "cli": cli,
             "payload": body,
             "env": ["TERM_PROGRAM": "iTerm.app"],
-            "pids": [1],
+            "pids": pids,
             "tty": "/dev/ttys001",
             "sentAt": 0
         ]
@@ -276,6 +280,29 @@ struct SessionStoreTests {
         store.attachCodexTerminal(terminal, sessionID: "live", workingDirectory: "/tmp/x")
         #expect(store.sessions.map(\.id) == ["live"])
         #expect(store.sessions[0].lastPrompt == "useful prompt")
+    }
+
+    @Test("A resumed Claude session replaces its stale row instead of adding one")
+    func coalescesResumedClaudeSession() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart", session: "old", pids: [1, 4242]))
+        _ = await store.handle(try event(
+            "UserPromptSubmit", session: "old",
+            payload: ["prompt": "useful prompt"], pids: [1, 4242]
+        ))
+        _ = await store.handle(try event("SessionStart", session: "live", pids: [1, 4242]))
+        #expect(store.sessions.map(\.id) == ["live"])
+        #expect(store.sessions[0].lastPrompt == "useful prompt")
+    }
+
+    @Test("Two Claude agents in separate processes stay separate rows")
+    func keepsDistinctClaudeProcesses() async throws {
+        let store = SessionStore()
+        store.approvalMatcher = ""
+        _ = await store.handle(try event("SessionStart", session: "one", pids: [1, 1001]))
+        _ = await store.handle(try event("SessionStart", session: "two", pids: [1, 1002]))
+        #expect(store.sessions.count == 2)
     }
 
     @Test("Matching titles in distinct processes remain distinct sessions")
