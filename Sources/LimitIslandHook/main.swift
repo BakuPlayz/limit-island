@@ -34,6 +34,18 @@ if isCodexNotify {
 }
 let event = eventFromArgv ?? (payload["hook_event_name"] as? String) ?? "Unknown"
 
+// Codex's `PreToolUse` hook is installed unscoped, because a `matcher` cannot be
+// verified without the person re-trusting the hook in Codex's own UI, and a matcher
+// that fails to match fails silently. The narrowing happens here instead: the only
+// Codex tool call this app has anything to say about is the one that asks a
+// question, and everything else leaves without opening the socket.
+//
+// This is a hot path — it runs before every Codex tool call — so the cheap exit
+// matters. Approvals still arrive on `PermissionRequest` and are untouched.
+if cli == "codex", event == "PreToolUse", payload["tool_name"] as? String != "request_user_input" {
+    exit(0)
+}
+
 // MARK: - Context the app cannot see from its own process
 
 /// The terminal-identifying variables the CLI inherited. The app turns these into a
@@ -195,6 +207,11 @@ if let reply,
    let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
    !object.isEmpty {
     FileHandle.standardOutput.write(Data(reply.utf8))
+} else if cli == "gemini" {
+    // Antigravity reads every hook's stdout as a JSON object and complains into its
+    // log when there is none. Claude Code and Codex treat silence as silence; this
+    // one wants it spelled out.
+    FileHandle.standardOutput.write(Data("{}".utf8))
 }
 
 exit(0)

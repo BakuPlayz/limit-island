@@ -15,8 +15,8 @@ struct QuotaReadout: View {
     /// order is the reverse of the right strip while keeping the logo nearest it.
     var mirrored = false
     var readsRightToLeft = false
-    /// The compact closed strip is provider-specific: Claude shows five-hour
-    /// quota, while Codex shows weekly quota. Expanded presentation opts into both.
+    /// The compact closed strip shows the short, independently resetting window.
+    /// The expanded header switches to the weekly pool.
     var showsFiveHour = true
     var showsWeek = true
 

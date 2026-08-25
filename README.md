@@ -81,9 +81,9 @@ immediately and your CLI behaves exactly as it would without them.
 At rest the strip carries two things:
 
 - **Pinned account readouts**, one on each side of the notch. Their provider logo
-  sits nearest the camera housing. Claude shows its compact five-hour reading while
-  the notch is closed; Codex shows its weekly reading instead. Opening the notch
-  shows the weekly reading for each pinned account.
+  sits nearest the camera housing. The closed notch shows the short, five-hour
+  window; opening it switches to the weekly pool. This includes Codex whenever its
+  account reports the five-hour window.
   Choose Codex and Claude accounts for the left and right slots in
   **Settings → Agents**; an account can only occupy one side.
 - Both sides reserve the same stable width even before anything is pinned. An
@@ -117,9 +117,20 @@ an agent can spend a long time thinking or waiting on a build.
 ### Approve without switching apps
 
 When Claude Code wants to run something, the card shows the tool and its target —
-a coloured diff for an edit, the command for `Bash`, the rendered Markdown for a
-plan. **⌃⌘Y** allows, **⌃⌘N** denies. The panel never takes focus, so the shortcuts
-work from wherever you are typing.
+a coloured diff for an edit, the command for `Bash`. **⌃⌘Y** allows, **⌃⌘N** denies.
+The panel never takes focus, so the shortcuts work from wherever you are typing.
+
+A finished plan is not a yes-or-no question, so its card offers four numbered
+choices instead, each on **⌃⌘1**–**⌃⌘4**: *Auto approve* lets the agent edit without
+asking again, *Manual approve* keeps every edit coming back to you, *View plan*
+renders the Markdown in place, and *Request changes…* sends the agent your notes
+instead. **⌃⌘Y** on a plan card is the first choice. Codex's own plan prompt is
+shown the same way.
+
+Answers you have to write — **Request changes…** on a plan, **Other…** on a question —
+are typed in the card itself. The island takes the keyboard only while that field is
+on screen, because macOS delivers keystrokes to the active application, and hands
+focus back to whatever you were in as soon as you send or press Escape.
 
 They are Control-Command rather than plain ⌘Y/⌘N on purpose. The shortcuts are read
 by a global monitor, and ⌘Y is Redo in several apps while ⌘N is New almost
@@ -144,7 +155,7 @@ Three things this does not do:
 | Default | Shows a card for the tools in the list below |
 | Auto-accept edits (⇧⇥) | Edits pass through; a `Bash` command still asks |
 | Bypass permissions | Nothing asks |
-| Plan mode | Only the finished plan is offered for approval |
+| Plan mode | Only the finished plan asks, and it asks how to build it |
 
 Which tools are routed through the notch is the **Approve from the notch** setting
 on the Agents tab. The default is the destructive set:
@@ -157,8 +168,19 @@ allows:
 
 Idle agents remain in this list, including after a turn finishes. A row is removed
 only when the CLI sends `SessionEnd` or its captured agent process has exited.
-Recent Codex rollouts are replayed when the app launches so an agent that was
-already waiting at its prompt is visible without requiring another command.
+
+Agents that were already working when Limit Island launched are picked up too, so
+you do not have to restart anything to see them. Recent Codex rollouts are replayed;
+recent Claude Code transcripts are read once and matched to the live `claude`
+process in that directory; and each live `agy` is asked which conversation it is in,
+by way of the presence lock it holds open — which is why two Antigravity sessions in
+one project are still two rows. For Claude and Codex, where two agents share one
+directory neither is adopted: from the outside they cannot be told apart, and a row
+pointing at the wrong tab is worse than no row.
+
+A session found this way can be watched and jumped to. Whether it can also be
+answered in the notch depends on whether it was started with the hooks installed —
+if it was not, its questions stay in its own terminal until it is restarted.
 
 | Terminal | Lands on |
 | --- | --- |
@@ -168,6 +190,10 @@ already waiting at its prompt is visible without requiring another command.
 | Ghostty 1.3+ | the exact terminal, using its AppleScript terminal ID |
 | kitty, WezTerm | the exact window or pane, via their own CLI |
 | Warp, Alacritty, VS Code, Cursor, Zed | the owning application |
+
+The island closes the moment you click, and the terminal is resolved behind it: a
+hidden application is un-hidden and a minimised window is restored, so the jump never
+"succeeds" with nothing on screen.
 
 macOS asks for Automation permission the first time. If it is declined, the island
 offers a link to Privacy settings and a Retry action. When several terminal surfaces
@@ -179,23 +205,57 @@ launches the owning terminal application; an exact-match failure is never a dead
 
 ### What each CLI can do
 
-| | Claude Code | Codex |
-| --- | --- | --- |
-| Show sessions and activity | ✅ | ✅ |
-| Title from your prompt | ✅ | ✅ |
-| Respect its auto mode | ✅ | ✅ |
-| Jump to the terminal | ✅ | with `notify` installed |
-| Approve from the notch | ✅ | — |
-| Quota readout | ✅ | ✅ |
+| | Claude Code | Codex | Gemini (`agy`) |
+| --- | --- | --- | --- |
+| Show sessions and activity | ✅ | ✅ | ✅ |
+| Which model it is running | ✅ | ✅ | ✅ |
+| Title from your prompt | ✅ | ✅ | from its history file |
+| Respect its auto mode | ✅ | ✅ | — |
+| Jump to the terminal | ✅ | with `notify` installed | ✅ |
+| Approve from the notch | ✅ | ✅ | ✅ |
+| Answer its questions | ✅ | ✅ | — |
+| Quota readout | ✅ | ✅ | ✅ |
 
-Only Claude Code has a hook that waits for a reply, so only Claude Code can be
-answered from the notch. Codex is followed through its own session transcripts,
-which give live activity but no way to answer it. This is stated in Settings too
-rather than left to be discovered.
+All three CLIs have a hook that waits for a reply, so all three can be approved
+from the notch.
 
-Gemini is currently switched off. Its code and tests are still in the repository —
-re-enabling it is one line in `Provider.isAvailable` — but it has no hook system to
-monitor sessions with, so it was crowding the two providers that do.
+Questions are answered two different ways. Claude is *handed* its answers: they go
+back as the tool's own input and the call proceeds. Codex has no equivalent, so its
+`request_user_input` call is blocked and the answers travel as the reason — which
+Codex reports to its model as the result. Either way nothing is typed into your
+terminal, and Codex never draws its own picker for a question you already answered.
+
+Codex checks its hooks against a list of ones you have trusted, so a freshly
+installed or reinstalled hook does nothing until you approve it with `/hooks`
+inside Codex. Until then questions keep appearing in the terminal as before.
+
+Every row carries the model it is running — `Opus 5`, `GPT-5.6`, `3.6 Flash` — as a
+badge beside the terminal name. Claude's comes from its transcript, Codex's from
+its rollout file, and Antigravity's from every hook payload it sends. A session
+that has not said yet simply has no badge.
+
+### Gemini through the Antigravity CLI
+
+Gemini sessions come from `agy`, whose lifecycle hooks report tool calls, model
+invocations and the end of a turn — and whose `PreToolUse` hook waits, so its
+permission questions can be answered from the notch like Claude Code's.
+
+Installing writes one named hook bundle, `limit-island`, into
+`~/.gemini/config/hooks.json`. Antigravity merges hook bundles by name, so ours
+sits beside anything you or a plugin already put there and removing it takes out
+exactly that key. That file is shared with the Antigravity app and IDE, so their
+sessions appear in the island too.
+
+Antigravity reads its hooks once, when a session starts, so installing reaches
+only the sessions started afterwards — a running `agy` keeps its old hooks until
+you restart it. Its prompts are not delivered by any hook, so a row takes its
+title from the newest entry for that conversation in
+`~/.gemini/antigravity-cli/history.jsonl`.
+
+Antigravity names its tools after its own step types. They are asked about under
+the Claude names in **Approve from the notch** — `run_command` is `Bash`,
+`edit_file` is `Edit`, `write_to_file` is `Write` — so one approval list covers
+every CLI rather than making you keep two in step.
 
 ### Menu-bar controls
 
@@ -254,6 +314,7 @@ chats, or model activity.
 | --- | --- |
 | No sessions appear | Check **Agents → Hooks installed**. If it says the hooks point at an older copy, the app was moved; choose **Reinstall hooks**. |
 | A card never appears for a tool | It is either outside the **Approve from the notch** list, or one of your own permission rules already covers it. |
+| Codex still asks in the terminal | Its hooks are untrusted or out of date. Run `/hooks` inside Codex and trust the Limit Island entries, then start a new session — Codex reads its hooks once, at session start. |
 | **Sign in required** | Reopen sign-in from **⋯** for Codex or Claude. For Gemini, remove and add the account again. |
 | Nothing near the menu bar | With no accounts and no sessions there is nothing to draw, so the strip hides. |
 | Jumping raises the app but not the tab | That terminal has no scripting interface, or Automation permission was declined (**System Settings → Privacy & Security → Automation**). |

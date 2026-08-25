@@ -111,6 +111,40 @@ final class QuotaStore: ObservableObject {
         meters.contains { $0.provider == .openAI }
     }
 
+    /// How little of the five-hour window has to be left before offering to pick the
+    /// work back up on the other side of the reset. Not zero: the offer is worth
+    /// making while the person is still at the desk, and the last few percent is
+    /// already too little to start anything with.
+    nonisolated static let autoContinueThreshold: Double = 3
+
+    /// The Claude account whose five-hour window is nearly gone, with the moment it
+    /// comes back.
+    ///
+    /// Both numbers are required. A reading with no reset date cannot be scheduled
+    /// against, and the scraped fallback never carries one — see
+    /// `SubscriptionUsageReader.scrapedUsage`. Guessing five hours from now would be
+    /// a schedule that fires into a window that is still empty.
+    var drainedClaudeWindow: (meter: Meter, resetAt: Date)? {
+        let candidates = visibleMeters.compactMap { meter -> (meter: Meter, resetAt: Date)? in
+            guard meter.provider == .claude else { return nil }
+            guard let resetAt = Self.drainedReset(in: usage(for: meter)) else { return nil }
+            return (meter, resetAt)
+        }
+        // The soonest reset, so two Claude accounts cannot leave the offer pointing
+        // at the later one while the earlier window is already back.
+        return candidates.min { $0.resetAt < $1.resetAt }
+    }
+
+    /// The reset date of a reading whose five-hour window is spent, or nil when it
+    /// is not spent or cannot be scheduled against.
+    /// Pure, so it is `nonisolated`: nothing here reads the store.
+    nonisolated static func drainedReset(in usage: SubscriptionUsage) -> Date? {
+        guard usage.status == .ready else { return nil }
+        guard let remaining = usage.fiveHourRemaining, remaining < autoContinueThreshold else { return nil }
+        guard let resetAt = usage.fiveHourResetAt, resetAt > .now else { return nil }
+        return resetAt
+    }
+
     /// The closed strip shows only explicitly pinned accounts. This keeps the two
     /// physical sides stable instead of making a fallback appear on one side.
     var rightStripMeter: Meter? {

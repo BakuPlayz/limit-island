@@ -21,8 +21,11 @@ enum NotchLayout {
     /// Floor for the panel's top band. The real height comes from the display's
     /// camera housing, which is taller than this on most Macs.
     static let minimumHeaderHeight: CGFloat = 30
-    /// Ceiling on the expanded height, after which the session list scrolls.
-    static let maximumPanelHeight: CGFloat = 420
+    /// Ceiling on the expanded height, after which the session list scrolls. Tall
+    /// enough for the worst card there is — a plan with its Markdown open and a text
+    /// field under it — because a field that scrolls out of view while it holds the
+    /// keyboard is worse than a taller panel.
+    static let maximumPanelHeight: CGFloat = 520
 
     /// Measures a view at its ideal size, off-screen.
     ///

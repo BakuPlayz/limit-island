@@ -81,6 +81,9 @@ private struct BreathingHalo: ViewModifier {
 /// One session in the expanded panel.
 struct SessionRow: View {
     let session: AgentSession
+    /// The person approved this session's plan with "auto approve", so Limit Island is
+    /// answering its edits for it. Silent permission should still be visible.
+    var isAutoApproved = false
     let onJump: () -> Void
 
     @State private var isHovered = false
@@ -105,6 +108,14 @@ struct SessionRow: View {
 
                 Spacer(minLength: 8)
 
+                if isAutoApproved {
+                    badge("auto edits")
+                        .help("You approved this session's plan with auto approve, so Limit Island allows its file edits without asking. Other tools still ask.")
+                }
+                if let model = ModelLabel.short(session.model) {
+                    badge(model)
+                        .help("Running \(session.model ?? model)")
+                }
                 if let terminal = session.terminal {
                     badge(terminal.displayName)
                 }
@@ -147,10 +158,10 @@ struct SessionRow: View {
         }
     }
 
-    private func badge(_ text: String) -> some View {
+    private func badge(_ text: String, dim: Bool = false) -> some View {
         Text(text)
             .islandFont(size: 9.5, weight: .medium)
-            .foregroundStyle(.white.opacity(0.72))
+            .foregroundStyle(.white.opacity(dim ? 0.45 : 0.72))
             .padding(.horizontal, 6)
             .padding(.vertical, 2.5)
             .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))

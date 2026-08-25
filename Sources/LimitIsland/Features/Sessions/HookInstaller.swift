@@ -47,6 +47,18 @@ enum HookInstaller {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/hooks.json")
     }
 
+    /// Antigravity's machine-local customization root. The CLI, the IDE and the
+    /// desktop app all read it, so a hook installed here covers every Gemini agent
+    /// on this machine.
+    static var geminiHooksURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".gemini/config/hooks.json")
+    }
+
+    /// The one top-level key this app owns in that file. Antigravity merges hook
+    /// bundles by name, so ours sits beside anyone else's and uninstall is the
+    /// removal of exactly this key.
+    static let geminiHookName = "limit-island"
+
     private static var replacedCodexNotifyURL: URL {
         HookServer.supportDirectory.appendingPathComponent("replaced-codex-notify.json")
     }
@@ -63,10 +75,19 @@ enum HookInstaller {
     }
 
     static func installClaudeAutomaticallyIfAvailable() {
-        guard commandIsAvailable("claude"), state() != .installed else { return }
+        guard commandIsAvailable("claude") else { return }
+        let before = state()
+        guard before != .installed else { return }
         do {
             try install()
-            setAutomaticNotice("Claude hooks installed automatically.")
+            // Claude Code reads settings.json when a session starts, so an install or a
+            // repair reaches only the sessions started after it. Saying so is the
+            // difference between "the notch is broken" and "restart that terminal".
+            setAutomaticNotice(
+                before == .absent
+                    ? "Claude hooks installed automatically. Sessions already running keep their old hooks until they restart."
+                    : "Claude hooks updated automatically. Restart any running session for it to be answerable from the island."
+            )
         } catch {
             setAutomaticNotice("Claude hooks need attention: \(error.localizedDescription)")
             Log.hooks.error("automatic Claude hook install failed: \(error.localizedDescription, privacy: .public)")
@@ -115,12 +136,34 @@ enum HookInstaller {
     // MARK: - Reading
 
     static func state() -> State {
-        guard let settings = readSettings(claudeSettingsURL),
-              let hooks = settings["hooks"] as? [String: Any] else { return .absent }
+        state(of: readSettings(claudeSettingsURL))
+    }
+
+    /// Split from `state()` so the judgement can be tested without a settings file.
+    static func state(of settings: [String: Any]?) -> State {
+        guard let settings, let hooks = settings["hooks"] as? [String: Any] else { return .absent }
         let commands = ourCommands(in: hooks)
         guard !commands.isEmpty else { return .absent }
         let expected = helperURL.path
-        return commands.allSatisfy { $0.hasPrefix(expected) } ? .installed : .stale
+        guard commands.allSatisfy({ $0.hasPrefix(expected) }) else { return .stale }
+        // A settings file written before an event joined `events` is as broken as one
+        // pointing at a moved bundle: the app looks installed and silently never hears
+        // about the thing that event carries. `PermissionRequest` was added this way,
+        // and its absence is why plan approvals never reached the notch.
+        return eventsMissing(from: hooks).isEmpty ? .installed : .stale
+    }
+
+    static func eventsMissing(from hooks: [String: Any]) -> Set<String> {
+        var installed: Set<String> = []
+        for (event, value) in hooks {
+            guard let matchers = value as? [[String: Any]] else { continue }
+            let ours = matchers
+                .compactMap { $0["hooks"] as? [[String: Any]] }
+                .flatMap { $0 }
+                .contains { isOurs($0["command"] as? String) }
+            if ours { installed.insert(event) }
+        }
+        return Set(events).subtracting(installed)
     }
 
     // MARK: - Writing
@@ -176,6 +219,20 @@ enum HookInstaller {
         "notify = [\"\(helperURL.path)\", \"notify\", \"codex\"]"
     }
 
+    /// The Codex hook events this app installs.
+    ///
+    /// `PermissionRequest` carries approvals. `PreToolUse` carries questions:
+    /// `request_user_input` is a normal tool call as far as hooks are concerned, so
+    /// blocking it is the only way to answer Codex with data rather than by firing
+    /// arrow keys at its picker.
+    ///
+    /// Neither entry takes a `matcher`. Codex honours a matcher-less entry — that is
+    /// how the approval hook has always been installed — and scoping `PreToolUse` to
+    /// one tool name would be an unverified guess at matcher syntax that fails
+    /// closed. The narrowing happens in the helper instead, which answers anything
+    /// that is not a question without ever opening the socket.
+    static let codexEvents = ["PermissionRequest", "PreToolUse"]
+
     static func codexState() -> State {
         guard let contents = try? String(contentsOf: codexConfigURL, encoding: .utf8) else { return .absent }
         guard let line = contents
@@ -185,6 +242,10 @@ enum HookInstaller {
         guard let settings = readSettings(codexHooksURL),
               let hooks = settings["hooks"] as? [String: Any],
               !ourCommands(in: hooks).isEmpty else { return .absent }
+        // An install predating the question hook has the approval hook and nothing
+        // else. It works, so it is not `absent`, but it cannot answer a question —
+        // `stale` is what puts the reinstall prompt in front of the person.
+        guard codexEvents.allSatisfy({ !ourCommands(in: hooks, event: $0).isEmpty }) else { return .stale }
         return .installed
     }
 
@@ -213,14 +274,16 @@ enum HookInstaller {
         try write(lines.joined(separator: "\n"), to: codexConfigURL)
         var settings = readSettings(codexHooksURL) ?? [:]
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        var matchers = hooks["PermissionRequest"] as? [[String: Any]] ?? []
-        matchers = matchers.compactMap { pruneOurHooks(from: $0) }
-        matchers.append(["hooks": [[
-            "type": "command",
-            "command": "\"\(helperURL.path)\" PermissionRequest codex",
-            "timeout": blockingTimeoutSeconds
-        ]]])
-        hooks["PermissionRequest"] = matchers
+        for event in codexEvents {
+            var matchers = hooks[event] as? [[String: Any]] ?? []
+            matchers = matchers.compactMap { pruneOurHooks(from: $0) }
+            matchers.append(["hooks": [[
+                "type": "command",
+                "command": "\"\(helperURL.path)\" \(event) codex",
+                "timeout": blockingTimeoutSeconds
+            ]]])
+            hooks[event] = matchers
+        }
         settings["hooks"] = hooks
         try write(settings, to: codexHooksURL)
         Log.hooks.info("installed codex notify into \(codexConfigURL.path, privacy: .public)")
@@ -247,6 +310,103 @@ enum HookInstaller {
             try write(settings, to: codexHooksURL)
         }
         Log.hooks.info("removed codex notify from \(codexConfigURL.path, privacy: .public)")
+    }
+
+    // MARK: - Gemini (Antigravity)
+
+    /// The events Antigravity offers. There is no `SessionStart` or `SessionEnd`:
+    /// `PreInvocation` is the first thing a turn does, and a finished session is
+    /// noticed by its process going away.
+    static let geminiEvents = ["PreToolUse", "PostToolUse", "PreInvocation", "PostInvocation", "Stop"]
+
+    /// Only `PreToolUse` can be answered; the rest report.
+    private static let geminiBlockingEvents: Set<String> = ["PreToolUse"]
+
+    /// Tool-scoped events take a `matcher`/`hooks` wrapper; the others are a flat
+    /// list of handlers. Sending the wrong one is accepted and silently ignored.
+    private static let geminiGroupedEvents: Set<String> = ["PreToolUse", "PostToolUse"]
+
+    static func geminiState() -> State {
+        geminiState(of: readSettings(geminiHooksURL))
+    }
+
+    /// Split from `geminiState()` so the judgement can be tested without a file.
+    static func geminiState(of hooks: [String: Any]?) -> State {
+        guard let bundle = hooks?[geminiHookName] as? [String: Any] else { return .absent }
+        let commands = geminiCommands(in: bundle)
+        guard !commands.isEmpty else { return .absent }
+        guard commands.allSatisfy({ $0.hasPrefix(helperURL.path) }) else { return .stale }
+        return geminiEventsMissing(from: bundle).isEmpty ? .installed : .stale
+    }
+
+    static func geminiEventsMissing(from bundle: [String: Any]) -> Set<String> {
+        let present = geminiEvents.filter { event in
+            geminiHandlers(in: bundle[event]).contains { isOurs($0["command"] as? String) }
+        }
+        return Set(geminiEvents).subtracting(present)
+    }
+
+    static func installGemini() throws {
+        var hooks = readSettings(geminiHooksURL) ?? [:]
+        var bundle: [String: Any] = [:]
+        for event in geminiEvents { bundle[event] = geminiEntry(for: event) }
+        hooks[geminiHookName] = bundle
+        try write(hooks, to: geminiHooksURL)
+        Log.hooks.info("installed gemini hooks into \(geminiHooksURL.path, privacy: .public)")
+    }
+
+    static func uninstallGemini() throws {
+        guard var hooks = readSettings(geminiHooksURL), hooks[geminiHookName] != nil else { return }
+        hooks[geminiHookName] = nil
+        try write(hooks, to: geminiHooksURL)
+        Log.hooks.info("removed gemini hooks from \(geminiHooksURL.path, privacy: .public)")
+    }
+
+    static func installGeminiAutomaticallyIfAvailable() {
+        guard commandIsAvailable("agy") else { return }
+        let before = geminiState()
+        guard before != .installed else { return }
+        do {
+            try installGemini()
+            setAutomaticNotice(
+                before == .absent
+                    ? "Gemini hooks installed automatically. Sessions already running keep their old hooks until they restart."
+                    : "Gemini hooks updated automatically. Restart any running session for it to be answerable from the island."
+            )
+        } catch {
+            setAutomaticNotice("Gemini hooks need attention: \(error.localizedDescription)")
+            Log.hooks.error("automatic Gemini hook install failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// One event's entry, in whichever of the two shapes that event takes.
+    static func geminiEntry(for event: String) -> Any {
+        let handler: [String: Any] = [
+            "type": "command",
+            // Quoted because the helper lives inside an app bundle, whose path has
+            // spaces in it, and Antigravity runs the command through `sh -c`.
+            "command": "\"\(helperURL.path)\" \(event) gemini",
+            "timeout": geminiBlockingEvents.contains(event) ? blockingTimeoutSeconds : reportingTimeoutSeconds
+        ]
+        guard geminiGroupedEvents.contains(event) else { return [handler] }
+        return [["matcher": "*", "hooks": [handler]]]
+    }
+
+    /// The handlers for one event, whichever shape it was written in.
+    private static func geminiHandlers(in value: Any?) -> [[String: Any]] {
+        guard let entries = value as? [[String: Any]] else { return [] }
+        return entries.flatMap { entry -> [[String: Any]] in
+            if let grouped = entry["hooks"] as? [[String: Any]] { return grouped }
+            return [entry]
+        }
+    }
+
+    private static func geminiCommands(in bundle: [String: Any]) -> [String] {
+        bundle.values
+            .flatMap { geminiHandlers(in: $0) }
+            .compactMap { $0["command"] as? String }
+            .filter(isOurs)
+            .map { $0.hasPrefix("\"") ? String($0.dropFirst().prefix(while: { $0 != "\"" })) : $0 }
     }
 
     /// A `notify` line this app wrote. A foreign top-level `notify` is backed up
@@ -317,8 +477,12 @@ enum HookInstaller {
         command?.contains("limitisland-hook") == true
     }
 
-    private static func ourCommands(in hooks: [String: Any]) -> [String] {
-        hooks.values
+    /// Our helper commands across every event, or within one named event when
+    /// `event` is given — which is how `codexState` tells a complete install from
+    /// one that predates the question hook.
+    private static func ourCommands(in hooks: [String: Any], event: String? = nil) -> [String] {
+        let entries = event.map { [hooks[$0]].compactMap { $0 } } ?? Array(hooks.values)
+        return entries
             .compactMap { $0 as? [[String: Any]] }
             .flatMap { $0 }
             .compactMap { $0["hooks"] as? [[String: Any]] }

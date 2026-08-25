@@ -24,6 +24,9 @@ final class IslandPresenter {
     var presentation: IslandPresentation = .strip
     var jumpSheet: JumpSheet?
     var questionShortcut: ((Int) -> Void)?
+    /// True while a card is showing a text field. The window controller watches this
+    /// to lend the panel keyboard focus for exactly that long — see `NeverKeyPanel`.
+    var isComposing = false
     /// Ideal height of the active interaction, measured by SwiftUI after layout.
     var interactionHeight: CGFloat = 0
 

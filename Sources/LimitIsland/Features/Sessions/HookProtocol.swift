@@ -22,10 +22,27 @@ struct HookEvent: Decodable, Sendable {
     let tty: String
     let sentAt: TimeInterval
 
-    var sessionID: String? { payload.string("session_id", "sessionId", "thread_id", "threadId") }
-    var toolName: String? { payload.string("tool_name", "toolName") }
-    var toolInput: JSONValue? { payload["tool_input"] ?? payload["toolInput"] }
-    var workingDirectory: String? { payload.string("cwd", "workspace_dir") }
+    var sessionID: String? {
+        payload.string("session_id", "sessionId", "thread_id", "threadId", "conversationId")
+    }
+    var toolName: String? {
+        payload.string("tool_name", "toolName") ?? payload["toolCall"]?.string("name")
+    }
+    var toolInput: JSONValue? {
+        payload["tool_input"] ?? payload["toolInput"]
+            // Antigravity documents `args` and its binary carries that tag, but it
+            // also carries `arguments` for the same thing; a rename here would cost
+            // every card its detail without failing anywhere visible.
+            ?? payload["toolCall"]?["args"] ?? payload["toolCall"]?["arguments"]
+    }
+    var workingDirectory: String? {
+        // Antigravity opens a workspace rather than a directory, and sends every
+        // root it was given. The first is the one the session belongs to.
+        payload.string("cwd", "workspace_dir")
+            ?? payload["workspacePaths"]?.arrayValue?.compactMap(\.stringValue).first
+    }
+    /// The model the CLI reported for this session, if it reports one at all.
+    var model: String? { payload.string("modelName", "model") }
     var prompt: String? { payload.string("prompt", "user_prompt") }
     var message: String? { payload.string("message", "notification") }
     var notificationType: NotificationType {
@@ -37,9 +54,22 @@ struct HookEvent: Decodable, Sendable {
     /// every `PreToolUse`, and it is the difference between a person who wants to be
     /// asked and one who has already said yes to everything.
     var permissionMode: PermissionMode {
-        PermissionMode(payload.string(
-            "permission_mode", "permissionMode", "approval_policy", "approvalPolicy"
-        ))
+        PermissionMode(rawPermissionMode)
+    }
+
+    /// The mode as actually reported, or nil when the event did not carry one.
+    ///
+    /// Not every event has the field. `permissionMode` folds that absence into
+    /// `standard`, which is the safe reading for "should we ask?" — but it is the
+    /// wrong reading for "what did the CLI do with the mode we set?", where a missing
+    /// field says nothing at all and `standard` would be a false report of failure.
+    var reportedPermissionMode: PermissionMode? {
+        guard let raw = rawPermissionMode else { return nil }
+        return PermissionMode(raw)
+    }
+
+    private var rawPermissionMode: String? {
+        payload.string("permission_mode", "permissionMode", "approval_policy", "approvalPolicy")
     }
 
     var provider: Provider {
@@ -78,6 +108,11 @@ enum PermissionMode: Equatable, Sendable {
     case standard
     /// Edits are accepted automatically; other tools still ask.
     case acceptEdits
+    /// Claude's auto mode. The CLI ranks it above accept-edits and below bypass, and
+    /// reaches it through a gate of its own that can refuse. Kept distinct from
+    /// `bypass` for exactly that reason: a switch into it has to be checked, and a
+    /// mode folded into another cannot be.
+    case auto
     /// Nothing asks.
     case bypass
     /// Planning; no edits happen, and the decision that matters is the plan itself.
@@ -88,7 +123,8 @@ enum PermissionMode: Equatable, Sendable {
         // recognise should never be read as blanket permission.
         switch raw {
         case "acceptEdits": self = .acceptEdits
-        case "bypassPermissions", "dangerously-skip-permissions", "never", "full-auto", "auto": self = .bypass
+        case "auto": self = .auto
+        case "bypassPermissions", "dangerously-skip-permissions", "never", "full-auto": self = .bypass
         case "plan": self = .plan
         default: self = .standard
         }
@@ -101,8 +137,8 @@ enum PermissionMode: Equatable, Sendable {
             return true
         case .bypass:
             return false
-        case .acceptEdits:
-            // Claude's auto/accept-edits mode is an explicit request for an
+        case .acceptEdits, .auto:
+            // Claude's auto and accept-edits modes are an explicit request for an
             // uninterrupted run. Even tools outside the edit family stay in the
             // terminal's own policy flow rather than gaining notch prompts.
             return false
@@ -115,7 +151,17 @@ enum PermissionMode: Equatable, Sendable {
 
     static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
 
-    var isAutomatic: Bool { self == .acceptEdits || self == .bypass }
+    /// What "auto approve" asks a Claude session to become.
+    ///
+    /// Accept-edits rather than Claude's own `auto`: a mode set through a hook is
+    /// applied without the CLI's auto-mode gate ever running, and a session left in
+    /// `auto` with that gate shut is put back into `default` — which asks about
+    /// *more* than before the plan was approved. Accept-edits has no gate and is
+    /// applied unconditionally, which is what a button promising "without asking
+    /// again" needs.
+    static let autoApprove = "acceptEdits"
+
+    var isAutomatic: Bool { self == .acceptEdits || self == .auto || self == .bypass }
 }
 
 /// What the app sends back. Only blocking events read it.
@@ -137,12 +183,25 @@ struct HookReply: Sendable {
 
     static let noOpinion = HookReply(decision: nil)
 
-    /// Claude Code's `PreToolUse` output shape.
+    /// Claude Code's `PreToolUse` output shape, or the CLI's own where it differs.
     func serialised(for event: HookEvent? = nil, reason: String?) -> String {
         guard let decision else { return "{}" }
+        // Antigravity answers with a flat decision object of its own, and reads
+        // `ask` as "put your own prompt up" — which is exactly what no opinion
+        // means to it, so only a real answer is ever sent.
+        if event?.provider == .gemini {
+            var root: [String: Any] = ["decision": decision.rawValue]
+            if let reason { root["reason"] = reason }
+            guard let data = try? JSONSerialization.data(withJSONObject: root),
+                  let text = String(data: data, encoding: .utf8) else { return "{}" }
+            return text
+        }
         if event?.event == "PermissionRequest" {
             var decisionObject: [String: Any] = ["behavior": decision.rawValue]
-            if let reason { decisionObject["message"] = reason }
+            // `message` belongs to the deny arm of the CLI's schema; the allow arm
+            // takes only `updatedInput` and `updatedPermissions`. It is dropped
+            // rather than rejected, but sending it claims a shape that does not exist.
+            if let reason, decision == .deny { decisionObject["message"] = reason }
             if let updatedPermissionMode {
                 decisionObject["updatedPermissions"] = [["type": "setMode", "mode": updatedPermissionMode, "destination": "session"]]
             }

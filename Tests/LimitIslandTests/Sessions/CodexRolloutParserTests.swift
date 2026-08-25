@@ -105,6 +105,28 @@ struct CodexRolloutParserTests {
         #expect(record(#"{"type":"turn_context","payload":{"approval_policy":"never"}}"#) == .approvalPolicy(.bypass))
     }
 
+    @Test("The lines that carry the policy carry the model too")
+    func model() {
+        func model(_ json: String) -> String? {
+            CodexRolloutParser.model(from: Data(json.utf8))
+        }
+        let context = #"{"type":"turn_context","payload":{"approval_policy":"never","model":"gpt-5.6-sol"}}"#
+        // Read separately from the record: one line, two things worth knowing, and a
+        // record can only be one of them.
+        #expect(model(context) == "gpt-5.6-sol")
+        #expect(record(context) == .approvalPolicy(.bypass))
+
+        let settings = """
+        {"type":"event_msg","payload":{"type":"thread_settings_applied",
+        "thread_settings":{"approval_policy":"on-request","model":"gpt-5.6-codex"}}}
+        """
+        #expect(model(settings) == "gpt-5.6-codex")
+        #expect(record(settings) == .approvalPolicy(.standard))
+
+        #expect(model(#"{"type":"event_msg","payload":{"type":"task_started"}}"#) == nil)
+        #expect(model("not json at all") == nil)
+    }
+
     @Test("The noisy majority of records are ignored")
     func ignoredRecords() {
         // Reasoning and token counts outnumber everything else in a real file; a

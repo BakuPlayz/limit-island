@@ -14,8 +14,22 @@ final class CodexSessionWatcher {
 
     struct Update {
         let sessionID: String
-        let record: CodexRolloutParser.Record
+        /// Absent on a line that named only the model — see `CodexRolloutParser.model`.
+        let record: CodexRolloutParser.Record?
         let workingDirectory: String?
+        let model: String?
+
+        init(
+            sessionID: String,
+            record: CodexRolloutParser.Record?,
+            workingDirectory: String?,
+            model: String? = nil
+        ) {
+            self.sessionID = sessionID
+            self.record = record
+            self.workingDirectory = workingDirectory
+            self.model = model
+        }
     }
 
     static var sessionsDirectory: URL {
@@ -88,7 +102,9 @@ final class CodexSessionWatcher {
 
     private func emit(_ line: Data, from url: URL) {
         guard !ignoredFiles.contains(url) else { return }
-        guard let record = CodexRolloutParser.record(from: line) else { return }
+        let model = CodexRolloutParser.model(from: line)
+        let record = CodexRolloutParser.record(from: line)
+        guard record != nil || model != nil else { return }
 
         if case let .started(sessionID, directory, source) = record {
             guard source != .subagent else {
@@ -108,7 +124,8 @@ final class CodexSessionWatcher {
         sink(Update(
             sessionID: sessionID,
             record: record,
-            workingDirectory: directories[sessionID]
+            workingDirectory: directories[sessionID],
+            model: model
         ))
     }
 

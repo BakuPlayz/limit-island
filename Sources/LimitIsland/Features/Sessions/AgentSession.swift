@@ -135,9 +135,18 @@ struct AgentSession: Identifiable, Sendable {
     var project: String?
     /// The user's most recent instruction, shown as `You: …`.
     var lastPrompt: String?
+    /// The model this session is running, as the CLI names it — `claude-opus-5`,
+    /// `gpt-5.6-sol`, `gemini-3.6-flash`. `nil` until something says; shortened for
+    /// display by `ModelLabel`.
+    var model: String?
     var activity: SessionActivity
     var terminal: TerminalRef?
     var selectedDestination: TerminalDestination? = nil
+    /// Found by reading its transcript at launch rather than announced by a hook.
+    /// Such a session can be watched and jumped to, but it cannot be answered from
+    /// the notch: it started before the hooks it would have to call. Cleared the
+    /// moment one of its hook events does arrive.
+    var isAdopted: Bool = false
     var startedAt: Date
     var lastEventAt: Date
 

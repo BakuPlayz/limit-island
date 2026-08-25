@@ -108,6 +108,53 @@ enum Keychain {
         return status == errSecSuccess
     }
 
+    /// Reads one of *our own* items, repairing its ownership the first time.
+    ///
+    /// `CredentialBroker` is built on "an item this app created is unlocked without a
+    /// prompt". That holds only while the app's code signature still matches the one
+    /// recorded in the item's ACL — and it stops matching the moment the app is signed
+    /// with a different identity, which is what happens to anything written before
+    /// `Scripts/build-app.sh` had a stable certificate to use.
+    ///
+    /// `set` cannot fix it: it updates in place, and an update leaves the original ACL
+    /// alone, so the mismatch survives every write and macOS goes on asking for the
+    /// login password on every launch. Deleting and re-adding is what makes the
+    /// binary running now the owner.
+    ///
+    /// Only for items this app owns. A foreign item must never be rewritten — that
+    /// would rotate a token out from under the CLI that created it.
+    static func ownedData(service: String, account: String) -> Data? {
+        guard let data = data(service: service, account: account) else { return nil }
+        // The read succeeded, which is the only moment the bytes are in hand to write
+        // back. Once per item: the repair is needed when the signature drifted, and
+        // rewriting a secret on every read is a cost with no matching benefit.
+        let identity = "\(service)/\(account)"
+        let shouldRepair = repairLock.withLock {
+            repairedThisLaunch.insert(identity).inserted
+        }
+        if shouldRepair, !reauthorize(data, service: service, account: account) {
+            Log.auth.error("could not adopt \(service, privacy: .public); it may keep prompting")
+        }
+        return data
+    }
+
+    /// Rewrites an item so its ACL belongs to the binary running now.
+    @discardableResult
+    static func reauthorize(_ data: Data, service: String, account: String) -> Bool {
+        remove(service: service, account: account)
+        let insert: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlocked
+        ]
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    private nonisolated(unsafe) static var repairedThisLaunch: Set<String> = []
+    private static let repairLock = NSLock()
+
     static func remove(service: String, account: String) {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,

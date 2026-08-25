@@ -19,6 +19,7 @@ struct IslandContent: View {
     @ObservedObject var quota: QuotaStore
     let sessions: SessionStore
     let codexReset: CodexResetStore
+    let autoContinue: AutoContinueStore
     let presenter: IslandPresenter
     let onToggle: () -> Void
     let onJump: (AgentSession) -> Void
@@ -71,8 +72,12 @@ struct IslandContent: View {
                         usage: leftUsage,
                         mirrored: true,
                         readsRightToLeft: true,
-                        showsFiveHour: expanded ? false : meter.provider != .openAI,
-                        showsWeek: expanded || meter.provider == .openAI
+                        // The strip and the expanded header deliberately show one
+                        // window each: five-hour at rest, then weekly on open.
+                        // Codex follows this rule when it reports its restored
+                        // five-hour window.
+                        showsFiveHour: !expanded,
+                        showsWeek: expanded
                     )
                 }
             }
@@ -87,8 +92,8 @@ struct IslandContent: View {
                     QuotaReadout(
                         meter: meter,
                         usage: rightUsage,
-                        showsFiveHour: expanded ? false : meter.provider != .openAI,
-                        showsWeek: expanded || meter.provider == .openAI
+                        showsFiveHour: !expanded,
+                        showsWeek: expanded
                     )
                 }
                 Spacer(minLength: NotchLayout.outerEdgePadding)
@@ -191,7 +196,8 @@ struct IslandContent: View {
             .padding(.horizontal, 12)
             .frame(height: presenter.headerHeight)
 
-            if !sessions.sessions.isEmpty || !sessions.pending.isEmpty || showsCodexResetBanner {
+            if !sessions.sessions.isEmpty || !sessions.pending.isEmpty
+                || showsCodexResetBanner || showsAutoContinue {
                 content
             }
         }
@@ -209,6 +215,23 @@ struct IslandContent: View {
     private var showsCodexResetBanner: Bool {
         guard sessions.activeInteraction == nil, presenter.jumpSheet == nil else { return false }
         return codexReset.shouldPrompt(hasCodexAccount: quota.hasCodexAccount)
+    }
+
+    /// Claude sessions that could be resumed, newest activity first — the order the
+    /// list already uses, so the picker matches what is on screen behind it.
+    private var claudeSessions: [AgentSession] {
+        sessions.sessions.filter { $0.provider == .claude && $0.terminal != nil }
+    }
+
+    /// Same rule as the banner about never covering an interaction, plus the two
+    /// states that outlive the offer: an armed schedule and the outcome of one.
+    private var showsAutoContinue: Bool {
+        guard sessions.activeInteraction == nil, presenter.jumpSheet == nil else { return false }
+        if autoContinue.scheduled != nil || autoContinue.lastOutcome != nil { return true }
+        return autoContinue.shouldOffer(
+            drainedResetAt: quota.drainedClaudeWindow?.resetAt,
+            hasClaudeSession: !claudeSessions.isEmpty
+        )
     }
 
     @ViewBuilder
@@ -246,11 +269,15 @@ struct IslandContent: View {
                     if showsCodexResetBanner, let forecast = codexReset.forecast {
                         CodexResetBanner(forecast: forecast) { codexReset.dismiss() }
                     }
+                    if showsAutoContinue { autoContinueCard }
                     if sessions.sessions.isEmpty {
                             emptyState
                     } else {
                         ForEach(sessions.sessions) { session in
-                            SessionRow(session: session) { onJump(session) }
+                            SessionRow(
+                                session: session,
+                                isAutoApproved: sessions.isAutoApproved(sessionID: session.id)
+                            ) { onJump(session) }
                         }
                     }
                 }
@@ -258,6 +285,36 @@ struct IslandContent: View {
             }
             .scrollIndicators(.visible)
         }
+    }
+
+    /// The reset the offer is about. An armed schedule carries its own, so the card
+    /// keeps naming the right window even after the reading has moved on.
+    private var autoContinueCard: some View {
+        AutoContinueCard(
+            sessions: claudeSessions,
+            resetAt: autoContinue.scheduled?.resetAt ?? quota.drainedClaudeWindow?.resetAt ?? .now,
+            scheduled: autoContinue.scheduled,
+            outcome: autoContinue.lastOutcome,
+            onSchedule: { session, message in
+                guard let terminal = session.terminal,
+                      let resetAt = quota.drainedClaudeWindow?.resetAt else { return }
+                autoContinue.schedule(ScheduledContinue(
+                    sessionID: session.id,
+                    project: session.project,
+                    terminal: terminal,
+                    message: message,
+                    fireAt: resetAt.addingTimeInterval(AutoContinueStore.delayAfterReset),
+                    resetAt: resetAt
+                ))
+            },
+            onDismiss: {
+                guard let resetAt = quota.drainedClaudeWindow?.resetAt else { return }
+                autoContinue.dismiss(resetAt: resetAt)
+            },
+            onCancel: { autoContinue.cancel() },
+            onAcknowledge: { autoContinue.acknowledgeOutcome() },
+            onComposing: { presenter.set(\.isComposing, to: $0) }
+        )
     }
 
     @ViewBuilder
@@ -274,25 +331,41 @@ struct IslandContent: View {
                 onApprovePlan: { sessions.approvePlan(request, automatic: $0) },
                 onRequestChanges: { sessions.requestPlanChanges(request, feedback: $0) },
                 onJump: {
-                    guard let session = sessions.session(id: request.sessionID) else { return }
+                    let session = sessions.session(id: request.sessionID)
+                    // Hand the decision back before leaving. The CLI is blocked on
+                    // this hook, so jumping without deferring arrives at a terminal
+                    // that is not asking anything yet — worst of all for a Codex
+                    // question, whose picker only appears once the block is lifted.
+                    sessions.dismiss(request)
+                    guard let session else { return }
                     onJump(session)
                 },
-                onQuestionState: { _, _, handler in presenter.questionShortcut = handler }
+                onQuestionState: { handler in presenter.questionShortcut = handler },
+                onComposing: { presenter.isComposing = $0 }
             )
-            .onDisappear { presenter.questionShortcut = nil }
+            .onDisappear {
+                presenter.questionShortcut = nil
+                // A card that goes away mid-sentence — answered in the terminal, or
+                // timed out — must not leave the panel holding the keyboard.
+                presenter.isComposing = false
+            }
 
         case let .codex(session, state):
             CodexQuestionCard(
                 question: state.question,
                 queueCount: sessions.waitingInteractionCount,
                 onSelection: { selections, multiSelect in
-                    TerminalJumper.answerCodexSelection(selections, multiSelect: multiSelect, in: session)
+                    await TerminalJumper.answerCodexSelection(selections, multiSelect: multiSelect, in: session)
                 },
                 onFinished: { sessions.dismissCodexQuestion(sessionID: session.id) },
                 onFallback: { onJump(session) },
-                onQuestionState: { handler in presenter.questionShortcut = handler }
+                onQuestionState: { handler in presenter.questionShortcut = handler },
+                onComposing: { presenter.isComposing = $0 }
             )
-            .onDisappear { presenter.questionShortcut = nil }
+            .onDisappear {
+                presenter.questionShortcut = nil
+                presenter.isComposing = false
+            }
         }
     }
 
@@ -386,7 +459,7 @@ struct IslandContent: View {
             // Read from the presenter, not from `HookInstaller.state()` — this is a
             // view body, and that call reads a file off disk.
             Text(presenter.hookState == .installed
-                 ? "Start Claude Code in a terminal and it will appear here."
+                 ? "Start Claude Code or Codex in a terminal and it will appear here."
                  : "Install the hooks in Settings to see sessions here.")
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.32))

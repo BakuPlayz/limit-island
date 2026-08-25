@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import LimitIsland
 
@@ -295,5 +296,61 @@ struct AccountDetectorTests {
         #expect(AccountDetector.idTokenClaims(from: [:]) == nil)
         #expect(AccountDetector.idTokenClaims(from: ["id_token": "nodots"]) == nil)
         #expect(AccountDetector.idTokenClaims(from: ["id_token": "a.!!!!.c"]) == nil)
+    }
+}
+
+@Suite("Auto-continue card layout")
+@MainActor
+struct AutoContinueCardLayoutTests {
+    private func session(id: String, project: String) -> AgentSession {
+        AgentSession(
+            id: id, provider: .claude, project: project, lastPrompt: nil,
+            activity: .done,
+            terminal: TerminalRef(
+                program: "Apple_Terminal", tty: "/dev/ttys00\(id)",
+                workingDirectory: "/tmp/\(project)", agentPID: 1_000, pids: [1_000]
+            ),
+            startedAt: .now, lastEventAt: .now
+        )
+    }
+
+    private func height(sessions: [AgentSession], scheduled: ScheduledContinue? = nil) -> CGFloat {
+        let card = AutoContinueCard(
+            sessions: sessions, resetAt: .now.addingTimeInterval(3_600),
+            scheduled: scheduled, outcome: nil,
+            onSchedule: { _, _ in }, onDismiss: {}, onCancel: {},
+            onAcknowledge: {}, onComposing: { _ in }
+        )
+        let ruler = NSHostingView(rootView: card.frame(width: NotchLayout.panelWidth))
+        ruler.frame = NSRect(x: 0, y: 0, width: NotchLayout.panelWidth, height: 0)
+        return ceil(ruler.fittingSize.height)
+    }
+
+    private func budget(sessionCount: Int, isArmed: Bool) -> CGFloat {
+        CGFloat(AutoContinueCard.rowBudget(sessionCount: sessionCount, isArmed: isArmed))
+            * NotchLayout.rowHeight
+    }
+
+    /// `IslandWindowController` sizes the window from `AutoContinueCard.rowBudget`,
+    /// and the card has to fit inside what it asked for. A clipped cost note is a
+    /// hedge nobody reads, which is the one thing this card must not do.
+    @Test("The offer fits the rows the window reserves for it")
+    func offerFitsItsBudget() {
+        for count in 1...4 {
+            let sessions = (1...count).map { session(id: "\($0)", project: "project-\($0)") }
+            #expect(height(sessions: sessions) <= budget(sessionCount: count, isArmed: false))
+        }
+    }
+
+    @Test("An armed schedule collapses into the rows it is budgeted")
+    func armedRowFitsItsBudget() {
+        let sessions = [session(id: "1", project: "vibe-usage")]
+        let plan = ScheduledContinue(
+            sessionID: "1", project: "vibe-usage",
+            terminal: sessions[0].terminal!,
+            message: AutoContinueStore.defaultMessage,
+            fireAt: .now.addingTimeInterval(3_660), resetAt: .now.addingTimeInterval(3_600)
+        )
+        #expect(height(sessions: sessions, scheduled: plan) <= budget(sessionCount: 1, isArmed: true))
     }
 }

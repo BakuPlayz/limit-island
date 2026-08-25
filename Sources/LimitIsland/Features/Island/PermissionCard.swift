@@ -14,9 +14,15 @@ struct PermissionCard: View {
     var onApprovePlan: (Bool) -> Void = { _ in }
     var onRequestChanges: (String) -> Void = { _ in }
     var onJump: () -> Void = {}
-    var onQuestionState: ((Int, AgentQuestion.Item, @escaping (Int) -> Void) -> Void)? = nil
+    var onQuestionState: ((@escaping (Int) -> Void) -> Void)? = nil
+    /// Raised while this card is showing a text field, so the window controller can
+    /// lend the panel keyboard focus for exactly that long.
+    var onComposing: (Bool) -> Void = { _ in }
     @State private var answerReady = false
-    @State private var planStage = 0 // summary, preview, build mode
+    /// True while the plan card is collecting written feedback. The choices are
+    /// replaced by the field rather than merely disabled, so there is nothing left
+    /// on the card a keystroke could reach.
+    @State private var isWritingFeedback = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -55,7 +61,8 @@ struct PermissionCard: View {
             if case let .question(question) = request.kind, let question {
                 QuestionChoices(
                     question: question, provider: request.provider,
-                    isEnabled: answerReady, onSubmit: onAnswer, onState: onQuestionState
+                    isEnabled: answerReady, onSubmit: onAnswer, onState: onQuestionState,
+                    onComposing: onComposing
                 )
             } else if case let .plan(markdown) = request.kind {
                 planControls(markdown)
@@ -97,47 +104,81 @@ struct PermissionCard: View {
         switch request.kind {
         case .edit: "Edit files"
         case .general: ToolSummary.activity(tool: request.tool, input: request.input)
-        case .plan: "Review the plan"
+        // Says who is asking as well as what for, so the plan card needs no second
+        // header line under this one.
+        case .plan: "\(request.provider.title) asks to review plan"
         case .question: "Question"
         }
     }
 
+    /// Every plan choice at once, in the same numbered rows a question uses: how the
+    /// agent should build is the decision, not a second screen behind "Build it".
     @ViewBuilder private func planControls(_ markdown: String) -> some View {
-        if planStage == 1 {
-            ScrollView {
-                Text(PlanText.attributed(markdown)).islandFont(size: 11)
-                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-            }.frame(maxHeight: 210)
-        } else {
-            Text(planStage == 2 ? "How should \(request.provider.title) build it?" : "Review the plan, request changes, or start building.")
-                .islandFont(size: 12).foregroundStyle(.white.opacity(0.82))
-        }
-        if planStage == 2 {
-            HStack(spacing: 8) {
-                answerButton("Back", shortcut: "", emphasised: false) { planStage = 0 }
-                answerButton("Manual approve", shortcut: "", emphasised: false) { onApprovePlan(false) }
-                answerButton("Auto approve", shortcut: "", emphasised: true) { onApprovePlan(true) }
+        // No header of its own: the row above already carries the icon, the agent's
+        // name and what it is asking for, and repeating that cost a line of a card
+        // that is mostly plan.
+        VStack(alignment: .leading, spacing: 7) {
+            if isWritingFeedback {
+                InlineComposer(
+                    prompt: "What should \(request.provider.title) change?",
+                    placeholder: "Ask for a change",
+                    accent: request.provider.color,
+                    onSubmit: { feedback in
+                        isWritingFeedback = false
+                        onRequestChanges(feedback)
+                    },
+                    onCancel: { isWritingFeedback = false },
+                    onComposing: onComposing,
+                    emptySubmitTitle: "Keep planning"
+                )
+            } else {
+            // The plan comes before the answers, and open: being told to read it is
+            // the whole reason this card is on screen.
+            if !markdown.isEmpty {
+                ScrollView {
+                    Text(PlanText.attributed(markdown)).islandFont(size: 11)
+                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                }.frame(maxHeight: 210)
             }
-        } else {
-            HStack(spacing: 8) {
-                answerButton("Deny", shortcut: "", emphasised: false) {
-                    guard let feedback = textPrompt(title: "Ask for plan changes", question: "What should the agent change?") else { return }
-                    onRequestChanges(feedback)
-                }
-                answerButton("Build it", shortcut: "", emphasised: true) { planStage = 2 }
-                answerButton(planStage == 1 ? "Hide plan" : "See plan", shortcut: "", emphasised: false) { planStage = planStage == 1 ? 0 : 1 }
+            Text("Ready to build?")
+                .islandFont(size: 13, weight: .medium)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(planChoices(markdown).enumerated()), id: \.offset) { offset, choice in
+                ChoiceRow(
+                    number: offset + 1, label: choice.label, description: choice.description,
+                    accent: request.provider.color, isEnabled: answerReady, action: choice.action
+                )
+            }
+            }
+        }
+        .onAppear {
+            onQuestionState? { option in
+                let choices = planChoices(markdown)
+                guard !isWritingFeedback, choices.indices.contains(option) else { return }
+                choices[option].action()
             }
         }
     }
 
-    private func textPrompt(title: String, question: String) -> String? {
-        let alert = NSAlert(); alert.messageText = title; alert.informativeText = question
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); alert.accessoryView = field
-        alert.addButton(withTitle: "Submit"); alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+    private func planChoices(_ markdown: String) -> [PlanChoice] {
+        [PlanChoice?]([
+            PlanChoice(label: "Auto approve", description: "Edit files without asking again") {
+                onApprovePlan(true)
+            },
+            PlanChoice(label: "Manual approve", description: "Ask before each edit") {
+                onApprovePlan(false)
+            },
+            // A plan the hook did not carry is still readable — in the terminal that
+            // wrote it. When it is on the card there is nothing to offer: the plan is
+            // already open above these rows, and a row for closing it is one more
+            // thing to read past on the way to the decision.
+            markdown.isEmpty
+                ? PlanChoice(label: "View plan", description: "Read it in the terminal", action: onJump)
+                : nil,
+            PlanChoice(label: "Request changes…", description: "Tell the agent what to fix") {
+                isWritingFeedback = true
+            }
+        ]).compactMap { $0 }
     }
 
     @ViewBuilder
@@ -181,18 +222,134 @@ struct PermissionCard: View {
     }
 }
 
+/// A written answer, typed in the card.
+///
+/// This used to be an `NSAlert`. A modal system dialog in the middle of answering the
+/// island was jarring, it blocked the app while it was up, and it never gave focus
+/// back afterwards. The trade it does not avoid is the focus itself: macOS delivers
+/// keystrokes to the active application, so `IslandWindowController.syncTextEntry`
+/// takes focus while this is on screen and returns it on the way out — which is why
+/// the appear/disappear signal matters more here than it looks.
+/// A prompt, a field and two buttons. Shared by the permission card and the
+/// auto-continue card so a typed answer looks and behaves the same wherever the
+/// island asks for one.
+struct InlineComposer: View {
+    let prompt: String
+    let placeholder: String
+    let accent: Color
+    let onSubmit: (String) -> Void
+    let onCancel: () -> Void
+    let onComposing: (Bool) -> Void
+    /// When set, an empty field is itself an answer — "no, keep planning", with nothing
+    /// to add — and the button says so rather than sitting disabled.
+    var emptySubmitTitle: String? = nil
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    private var trimmed: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(prompt)
+                .islandFont(size: 12, weight: .medium)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .islandFont(size: 12)
+                .foregroundStyle(.white)
+                .tint(accent)
+                .padding(8)
+                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+                .focused($isFocused)
+                .onSubmit(send)
+            HStack(spacing: 8) {
+                AnswerButton(title: "Cancel", shortcut: "esc", emphasised: false, isEnabled: true, action: onCancel)
+                AnswerButton(
+                    title: trimmed.isEmpty ? (emptySubmitTitle ?? "Send") : "Send",
+                    shortcut: "↩", emphasised: true,
+                    isEnabled: !trimmed.isEmpty || emptySubmitTitle != nil, action: send
+                )
+            }
+        }
+        .onAppear {
+            onComposing(true)
+            isFocused = true
+        }
+        .onDisappear { onComposing(false) }
+        .onExitCommand(perform: onCancel)
+    }
+
+    private func send() {
+        guard !trimmed.isEmpty || emptySubmitTitle != nil else { return }
+        onSubmit(trimmed)
+    }
+}
+
+/// What a plan card offers, in the order the rows are numbered.
+private struct PlanChoice {
+    let label: String
+    let description: String
+    let action: () -> Void
+}
+
+/// One numbered choice. The same row whether an agent is asking a question, asking
+/// how it should build a plan, or the island is asking which session to resume, so
+/// every card reads as one thing.
+struct ChoiceRow: View {
+    /// Nil where no hotkey is bound to the row. The badge is a promise the panel
+    /// only keeps while it holds the keyboard for an active card, and a shortcut
+    /// printed on a row that does not answer to it is worse than no badge.
+    var number: Int? = nil
+    let label: String
+    var description: String? = nil
+    let accent: Color
+    var isSelected = false
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        PressSurface(isEnabled: isEnabled, isSelected: isSelected, action: action) {
+            HStack(alignment: .top, spacing: 9) {
+                if let number {
+                    Text("⌃⌘\(number)").islandFont(size: 9, weight: .semibold)
+                        .padding(.horizontal, 5).padding(.vertical, 3)
+                        .background(accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).islandFont(size: 12, weight: .medium)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let description {
+                        Text(description).islandFont(size: 9.5).opacity(0.58)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 4)
+                if isSelected { Image(systemName: "checkmark").foregroundStyle(accent) }
+            }
+            .padding(8)
+        }
+    }
+}
+
 private struct QuestionChoices: View {
     let question: AgentQuestion
     let provider: Provider
     let isEnabled: Bool
     let onSubmit: ([String: String]) -> Void
-    let onState: ((Int, AgentQuestion.Item, @escaping (Int) -> Void) -> Void)?
+    let onState: ((@escaping (Int) -> Void) -> Void)?
+    let onComposing: (Bool) -> Void
     @State private var index = 0
     @State private var selected: Set<String> = []
     @State private var answers: [String: String] = [:]
     /// What was ticked on each question already passed, so stepping back shows the
     /// earlier answer to change rather than an empty list.
     @State private var selections: [Int: Set<String>] = [:]
+    /// The options are replaced by the field while a written answer is being typed,
+    /// so nothing else on the card is reachable in the moment the panel holds focus.
+    @State private var isWritingAnswer = false
 
     var body: some View {
         let item = question.items[index]
@@ -219,10 +376,26 @@ private struct QuestionChoices: View {
             Text(item.question)
                 .islandFont(size: 13, weight: .medium)
                 .fixedSize(horizontal: false, vertical: true)
+            // A question with no options at all — which Codex is allowed to ask —
+            // has nothing to pick, so the field is the card rather than something
+            // reached by way of an "Other…" row.
+            if isWritingAnswer || item.isFreeTextOnly {
+                InlineComposer(
+                    prompt: item.header,
+                    placeholder: "Type your answer",
+                    accent: provider.color,
+                    onSubmit: { answer in
+                        isWritingAnswer = false
+                        answerOther(answer, for: item)
+                    },
+                    onCancel: { isWritingAnswer = false },
+                    onComposing: onComposing
+                )
+            } else {
             ForEach(Array(item.options.enumerated()), id: \.element.id) { offset, option in
                 optionRow(option, number: offset + 1, item: item)
             }
-            PressSurface(isEnabled: isEnabled, action: { collectOther(for: item) }) {
+            PressSurface(isEnabled: isEnabled, action: { isWritingAnswer = true }) {
                 HStack(spacing: 9) {
                     Image(systemName: "ellipsis.bubble")
                     Text("Other…").islandFont(size: 12, weight: .medium)
@@ -243,6 +416,7 @@ private struct QuestionChoices: View {
                         .foregroundStyle(.black)
                 }
             }
+            }
         }
         .onAppear { publish(item) }
         .onChange(of: index) { _, _ in publish(question.items[index]) }
@@ -250,30 +424,16 @@ private struct QuestionChoices: View {
 
     private func optionRow(_ option: AgentQuestion.Item.Option, number: Int, item: AgentQuestion.Item) -> some View {
         let chosen = selected.contains(option.label)
-        return PressSurface(isEnabled: isEnabled, isSelected: chosen, action: {
+        return ChoiceRow(
+            number: number, label: option.label, description: option.description,
+            accent: provider.color, isSelected: chosen, isEnabled: isEnabled
+        ) {
             if item.multiSelect {
                 if chosen { selected.remove(option.label) } else { selected.insert(option.label) }
             } else {
                 selected = [option.label]
                 advance(item)
             }
-        }) {
-            HStack(alignment: .top, spacing: 9) {
-                Text("⌃⌘\(number)").islandFont(size: 9, weight: .semibold)
-                    .padding(.horizontal, 5).padding(.vertical, 3)
-                    .background(provider.color.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(option.label).islandFont(size: 12, weight: .medium)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let description = option.description {
-                        Text(description).islandFont(size: 9.5).opacity(0.58)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 4)
-                if chosen { Image(systemName: "checkmark").foregroundStyle(provider.color) }
-            }
-            .padding(8)
         }
     }
 
@@ -295,8 +455,8 @@ private struct QuestionChoices: View {
     }
 
     private func publish(_ item: AgentQuestion.Item) {
-        onState?(index, item) { option in
-            guard item.options.indices.contains(option) else { return }
+        onState? { option in
+            guard !isWritingAnswer, item.options.indices.contains(option) else { return }
             let label = item.options[option].label
             if item.multiSelect {
                 if selected.contains(label) { selected.remove(label) } else { selected.insert(label) }
@@ -307,20 +467,12 @@ private struct QuestionChoices: View {
         }
     }
 
-    private func collectOther(for item: AgentQuestion.Item) {
-        let alert = NSAlert()
-        alert.messageText = item.header
-        alert.informativeText = item.question
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        field.placeholderString = "Type your answer"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Submit")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+    /// A written answer counts as this question answered, exactly as picking an
+    /// option does, so it moves the stepper along the same way.
+    private func answerOther(_ text: String, for item: AgentQuestion.Item) {
         answers[item.question] = text
+        selections[index] = []
+        selected.removeAll()
         if index + 1 < question.items.count { index += 1 } else { onSubmit(answers) }
     }
 }
@@ -329,13 +481,13 @@ struct CodexQuestionCard: View {
     let question: AgentQuestion
     var queueCount = 1
     /// Returns true only when the selection was delivered to the exact terminal.
-    let onSelection: ([Int], Bool) -> Bool
+    let onSelection: ([Int], Bool) async -> Bool
     let onFinished: () -> Void
     let onFallback: () -> Void
     let onQuestionState: ((@escaping (Int) -> Void) -> Void)?
+    var onComposing: (Bool) -> Void = { _ in }
     @State private var index = 0
     @State private var selected: Set<Int> = []
-    @State private var planStage = 0
 
     var body: some View {
         if question.items.indices.contains(index) {
@@ -353,22 +505,6 @@ struct CodexQuestionCard: View {
                 Text(item.question)
                     .islandFont(size: 13, weight: .medium)
                     .fixedSize(horizontal: false, vertical: true)
-
-                if isPlanExit(item) {
-                    if planStage == 0 {
-                        HStack(spacing: 8) {
-                            codexAction("Deny", false) { choose(planOption(containing: "change", in: item) ?? 2, item: item) }
-                            codexAction("Build it", true) { planStage = 1 }
-                            codexAction("See plan", false, action: onFallback)
-                        }
-                    } else {
-                        HStack(spacing: 8) {
-                            codexAction("Back", false) { planStage = 0 }
-                            codexAction("Manual approve", false) { choose(planOption(containing: "manual", in: item) ?? 1, item: item) }
-                            codexAction("Auto approve", true) { choose(planOption(containing: "auto", in: item) ?? 0, item: item) }
-                        }
-                    }
-                } else {
 
                 ForEach(Array(item.options.enumerated()), id: \.offset) { optionIndex, option in
                     PressSurface(isSelected: selected.contains(optionIndex), action: {
@@ -406,7 +542,6 @@ struct CodexQuestionCard: View {
                             .foregroundStyle(.black)
                     }
                 }
-                }
 
                 PressSurface(action: onFallback) {
                     Label("Answer in terminal", systemImage: "arrow.up.forward.app")
@@ -424,19 +559,6 @@ struct CodexQuestionCard: View {
         }
     }
 
-    private func isPlanExit(_ item: AgentQuestion.Item) -> Bool {
-        item.options.contains { $0.label.localizedCaseInsensitiveContains("auto mode") } &&
-        item.options.contains { $0.label.localizedCaseInsensitiveContains("manual") }
-    }
-
-    private func planOption(containing text: String, in item: AgentQuestion.Item) -> Int? {
-        item.options.firstIndex { $0.label.localizedCaseInsensitiveContains(text) }
-    }
-
-    private func codexAction(_ title: String, _ primary: Bool, action: @escaping () -> Void) -> some View {
-        AnswerButton(title: title, shortcut: "", emphasised: primary, isEnabled: true, action: action)
-    }
-
     private func choose(_ option: Int, item: AgentQuestion.Item) {
         if item.multiSelect {
             if selected.contains(option) { selected.remove(option) } else { selected.insert(option) }
@@ -449,14 +571,16 @@ struct CodexQuestionCard: View {
     private func submit(_ item: AgentQuestion.Item) {
         guard !selected.isEmpty else { return }
         let choices = selected.sorted()
-        guard onSelection(choices, item.multiSelect) else {
-            // Bring the exact picker forward for direct input. Its transcript will
-            // clear this card as soon as the terminal accepts the answer.
-            onFallback()
-            return
+        Task { @MainActor in
+            guard await onSelection(choices, item.multiSelect) else {
+                // Bring the exact picker forward for direct input. Its transcript will
+                // clear this card as soon as the terminal accepts the answer.
+                onFallback()
+                return
+            }
+            selected.removeAll()
+            if index + 1 < question.items.count { index += 1 } else { onFinished() }
         }
-        selected.removeAll()
-        if index + 1 < question.items.count { index += 1 } else { onFinished() }
     }
 
     private func publish(_ item: AgentQuestion.Item) {

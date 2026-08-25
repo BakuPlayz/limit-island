@@ -178,10 +178,14 @@ actor GeminiCredentialStore {
     // MARK: - Sources
 
     private func load(_ credential: CredentialSource) async -> GeminiToken? {
-        // This app's own item. We created it, so reading it never prompts and it
-        // does not need to go through the broker.
+        // This app's own item, so it does not go through the broker. It still goes
+        // through `ownedData`: "we created it, so reading it never prompts" is only
+        // true while our signature matches the item's ACL, and adopting it on the way
+        // past is what keeps that true across a re-signed build.
         if let identifier = credential.oauthIdentifier {
-            guard let data = Keychain.data(service: Self.appService, account: identifier.uuidString) else { return nil }
+            guard await BiometricGate.unlock(reason: "use your saved Gemini account") else { return nil }
+            guard let data = Keychain.ownedData(service: Self.appService, account: identifier.uuidString)
+            else { return nil }
             return Self.decodeStored(data)
         }
         // The CLI's item is foreign, so it goes through the broker. Google stamps

@@ -58,9 +58,52 @@ private struct AppearanceSettings: View {
                 Text("Applies to agent and question text. Quotas, commands and diffs remain monospaced.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
+            CredentialLockSection()
         }
         .formStyle(.grouped)
         .padding(20)
+    }
+}
+
+/// The Touch ID toggle, and the way back from a refusal.
+private struct CredentialLockSection: View {
+    @State private var isEnabled = BiometricGate.isEnabled
+    @State private var state = BiometricGate.state
+
+    var body: some View {
+        Section("Security") {
+            Toggle("Require \(BiometricGate.biometryName) to use saved accounts", isOn: $isEnabled)
+                .disabled(!BiometricGate.isAvailable)
+                .onChange(of: isEnabled) { _, enabled in
+                    BiometricGate.isEnabled = enabled
+                    state = BiometricGate.state
+                }
+
+            if !BiometricGate.isAvailable {
+                Text("This Mac has no biometric or password authentication available.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                // Says plainly what it does and does not cover, because "require Touch
+                // ID" reads like protection on the keychain itself, and it is not:
+                // that needs a signed team identifier this build does not have.
+                Text("Asked once per launch, before Limit Island first reads a stored token. It gates this app's use of your accounts — it does not encrypt the keychain items themselves.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if isEnabled, state == .refused {
+                HStack {
+                    Text("Locked for this session.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Unlock") {
+                        BiometricGate.relock()
+                        state = BiometricGate.state
+                    }
+                }
+            }
+        }
+        .onAppear { state = BiometricGate.state }
     }
 }
 
@@ -185,15 +228,13 @@ private struct MeterRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if usage.status == .ready {
-                    if resetSchedule.isEmpty {
-                        Text("Reset time unavailable")
+                    if windows.isEmpty {
+                        Text("Usage unavailable")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(resetSchedule, id: \.self) { schedule in
-                            Text(schedule)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        ForEach(windows, id: \.title) { window in
+                            windowLine(window)
                         }
                     }
                 }
@@ -240,16 +281,33 @@ private struct MeterRow: View {
         state.usage(for: meter)
     }
 
-    /// Reset dates are optional because the page-scraping fallback can read a
-    /// percentage without a provider-supplied schedule. Only show dates the
-    /// provider actually returned.
-    private var resetSchedule: [String] {
-        [
-            ("5-hour", usage.fiveHourResetAt),
-            ("Weekly", usage.weekResetAt)
-        ].compactMap { label, resetAt in
-            ResetCountdown.settings(resetAt).map { "\(label) reset: \($0)" }
+    /// The windows this provider actually reported. A percentage or a reset date is
+    /// enough to be worth a line — the page-scraping fallback reads one without the
+    /// other — but a window with neither is not a window this account has.
+    private var windows: [QuotaWindow] {
+        QuotaWindow.allCases.filter {
+            usage.remaining(in: $0) != nil || usage.resetAt(in: $0) != nil
         }
+    }
+
+    /// `5-hour  33% left · resets Aug 16, 2026 at 19:09` — the number the notch shows
+    /// and the time it recovers, on one line, in the same severity colour as the
+    /// strip so the two can never disagree.
+    private func windowLine(_ window: QuotaWindow) -> some View {
+        let remaining = usage.remaining(in: window)
+        return HStack(spacing: 6) {
+            Text(window.title.capitalized)
+                .frame(width: 62, alignment: .leading)
+            if let remaining {
+                Text("\(Int(remaining.rounded()))% left")
+                    .foregroundStyle(QuotaTone.color(remaining: remaining, provider: meter.provider))
+            }
+            if let reset = ResetCountdown.settings(usage.resetAt(in: window)) {
+                Text("resets \(reset)")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -260,6 +318,7 @@ private struct SessionsSettings: View {
     let sessions: SessionStore
     @State private var hookState = HookInstaller.state()
     @State private var codexState = HookInstaller.codexState()
+    @State private var geminiState = HookInstaller.geminiState()
     @State private var installError: String?
 
     var body: some View {
@@ -274,6 +333,7 @@ private struct SessionsSettings: View {
                 pinsSection
                 hookSection
                 codexSection
+                geminiSection
                 capabilitiesSection
                 approvalSection
                 liveSection
@@ -394,15 +454,60 @@ private struct SessionsSettings: View {
             Text("""
             Codex sessions are read from the transcripts it already writes to \
             ~/.codex/sessions, so activity appears with no setup at all. Installing \
-            adds the terminal `notify` line plus a blocking PermissionRequest hook. \
-            Codex asks you to trust new hooks once in its `/hooks` review; Limit Island \
-            never bypasses that review. Existing settings and project entries are kept.
+            adds the terminal `notify` line plus two blocking hooks: PermissionRequest \
+            for approvals, and PreToolUse so Codex's questions can be answered here \
+            instead of in the terminal. Codex asks you to trust new hooks once in its \
+            `/hooks` review, and answers nothing here until you do; Limit Island never \
+            bypasses that review. Existing settings and project entries are kept.
             """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var geminiSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(geminiStateTitle, systemImage: geminiState == .installed ? "checkmark.circle.fill" : "circle.dashed")
+                    .font(.headline)
+                Spacer()
+                if geminiState == .installed {
+                    Button("Remove") { perform(HookInstaller.uninstallGemini) }
+                } else {
+                    Button(geminiState == .stale ? "Reinstall" : "Install") {
+                        perform(HookInstaller.installGemini)
+                    }
+                }
+            }
+            Text("""
+            Gemini sessions come from the Antigravity CLI (`agy`). Installing adds one \
+            named hook bundle to \(HookInstaller.geminiHooksURL.path), beside any hooks \
+            you or a plugin already put there; removing takes out only that bundle. The \
+            file is shared with the Antigravity app and IDE, so their sessions appear too.
+            """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            // The failure this sentence prevents: installing while `agy` is running,
+            // then watching a session that loaded no hooks at start-up never appear.
+            Label("""
+            Antigravity reads its hooks once, when a session starts. A session already \
+            running keeps its old ones until you restart it.
+            """, systemImage: "arrow.clockwise")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var geminiStateTitle: String {
+        switch geminiState {
+        case .installed: "Gemini integration installed"
+        case .absent: "Gemini integration not installed"
+        case .stale: "Gemini integration points at an older copy"
+        }
     }
 
     private var codexStateTitle: String {
@@ -429,6 +534,7 @@ private struct SessionsSettings: View {
                 .font(.headline)
             capability(.claude, monitor: true, approve: true, note: "Full support through Claude Code's hooks.")
             capability(.openAI, monitor: true, approve: true, note: "Live activity comes from session files; official permission hooks block for Allow/Deny, and simple choices use verified terminal input.")
+            capability(.gemini, monitor: true, approve: true, note: "Through the Antigravity CLI's lifecycle hooks. Its tools are asked about under the Claude names above — run_command is Bash, edit_file is Edit — so one approval list covers both.")
         }
         .padding(12)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
@@ -515,7 +621,7 @@ private struct SessionsSettings: View {
                         Text(session.terminal?.displayName ?? "Terminal")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("Jump") { _ = TerminalJumper.jump(to: session) }
+                        Button("Jump") { Task { _ = await TerminalJumper.jump(to: session) } }
                     }
                 }
             }
@@ -549,5 +655,6 @@ private struct SessionsSettings: View {
         }
         hookState = HookInstaller.state()
         codexState = HookInstaller.codexState()
+        geminiState = HookInstaller.geminiState()
     }
 }

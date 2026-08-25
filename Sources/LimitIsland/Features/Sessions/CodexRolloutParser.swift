@@ -39,6 +39,26 @@ enum CodexRolloutParser {
         case approvalPolicy(PermissionMode)
     }
 
+    /// The model named by one line, if it names one.
+    ///
+    /// Read separately from `record(from:)` rather than as another `Record` case:
+    /// the lines that carry a model carry the approval policy too, and a line can
+    /// only produce one record. Both matter, so neither may displace the other.
+    static func model(from line: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+              let payload = root["payload"] as? [String: Any] else { return nil }
+        switch root["type"] as? String {
+        case "turn_context":
+            return payload["model"] as? String
+        case "event_msg":
+            guard payload["type"] as? String == "thread_settings_applied",
+                  let settings = payload["thread_settings"] as? [String: Any] else { return nil }
+            return settings["model"] as? String
+        default:
+            return nil
+        }
+    }
+
     /// Decodes one line. Returns nil for the many records that say nothing the panel
     /// shows — reasoning, token counts, world state and the rest.
     static func record(from line: Data) -> Record? {

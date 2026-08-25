@@ -60,9 +60,16 @@ actor CredentialBroker {
     ///   with the mirrored bytes and the time they were taken. Providers that
     ///   embed an expiry can parse it; those that do not (Claude) can lean on the
     ///   mirror age and on `invalidate(_:)` from the 401 path.
-    func data(for key: Key, isFresh: @Sendable (Data, Date) -> Bool = { _, _ in true }) -> Data? {
+    func data(for key: Key, isFresh: @Sendable (Data, Date) -> Bool = { _, _ in true }) async -> Data? {
         if let entry = cache[key], isFresh(entry.data, entry.mirroredAt) {
             return entry.data
+        }
+        // Every stored credential reaches a provider through here, so this is the one
+        // place the gate has to be. A refusal reads as "no credential", which the
+        // callers already treat as signed out rather than as an error.
+        guard await BiometricGate.unlock(reason: "use your saved coding-agent accounts") else {
+            Log.auth.info("credential read skipped: locked")
+            return nil
         }
         if let entry = readMirror(key), isFresh(entry.data, entry.mirroredAt) {
             cache[key] = entry
@@ -110,7 +117,11 @@ actor CredentialBroker {
     // MARK: - Storage
 
     private func readMirror(_ key: Key) -> Entry? {
-        guard let data = Keychain.data(service: Self.mirrorService, account: key.mirrorAccount) else { return nil }
+        // Our own item, so `ownedData` — it adopts the item on the way past, which is
+        // what stops a signature change turning "no prompt" back into a prompt on
+        // every launch.
+        guard let data = Keychain.ownedData(service: Self.mirrorService, account: key.mirrorAccount)
+        else { return nil }
         return try? JSONDecoder().decode(Entry.self, from: data)
     }
 

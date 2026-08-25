@@ -10,17 +10,11 @@ enum Provider: String, CaseIterable, Codable, Identifiable, Sendable {
 
     /// Whether this provider is offered in the app at all.
     ///
-    /// Gemini is switched off rather than deleted. Its quota reader, OAuth flow,
-    /// credential store and tests all still build and pass — nothing about turning
-    /// it back on is a rewrite, it is this line — but it is not carrying its weight
-    /// in the UI: it has no hook system to monitor sessions with, and it crowds the
-    /// two providers that do.
-    var isAvailable: Bool {
-        switch self {
-        case .openAI, .claude: true
-        case .gemini: false
-        }
-    }
+    /// Gemini was switched off for as long as it had no way to report sessions.
+    /// Antigravity's CLI (`agy`) has lifecycle hooks, so it now does: activity,
+    /// the model in use, and blocking permission questions all arrive the same way
+    /// Claude Code's do. See `HookInstaller.installGemini`.
+    var isAvailable: Bool { true }
 
     /// The providers to show. Everything user-facing enumerates this rather than
     /// `allCases`, so hiding one is a single change rather than a hunt.

@@ -42,7 +42,7 @@ final class PendingRequest: Identifiable {
 
     var kind: Kind {
         switch tool {
-        case "AskUserQuestion": .question(AgentQuestion.parse(input))
+        case "AskUserQuestion", "request_user_input": .question(AgentQuestion.parse(input))
         case "ExitPlanMode": .plan(input?.string("plan") ?? "")
         case "Edit", "MultiEdit", "Write", "NotebookEdit": .edit
         default: .general
@@ -91,20 +91,44 @@ final class PendingRequest: Identifiable {
 
     func answer(_ answers: [String: String]) {
         guard !isTooSoon else { return reject("answer") }
+
+        // Codex cannot be handed an answer the way Claude can, so its question is
+        // refused and the answers ride back as the refusal's reason. Blocking the
+        // call is also what stops Codex drawing its own picker in the terminal —
+        // the two would otherwise both be waiting for the same person.
+        if provider == .openAI {
+            finish(.init(decision: .deny), CodexAnswerText.render(answers, for: AgentQuestion.parse(input)))
+            return
+        }
+
         guard case let .object(original) = input else { return }
         var updated = original
         updated["answers"] = .object(answers.mapValues(JSONValue.string))
         finish(.init(decision: .allow, updatedInput: .object(updated)), "Answered from Limit Island")
     }
 
+    /// The mode rides along only when the person asked for one. "Ask before each
+    /// edit" is a choice about being asked, not a request to reset a session that
+    /// was already running in some other mode of its own.
     func approvePlan(automatic: Bool) {
         guard !isTooSoon else { return reject("approve plan") }
-        finish(.init(decision: .allow, updatedInput: input, updatedPermissionMode: automatic ? "acceptEdits" : "default"), "Plan approved from Limit Island")
+        finish(
+            .init(
+                decision: .allow,
+                updatedInput: input,
+                updatedPermissionMode: automatic ? PermissionMode.autoApprove : nil
+            ),
+            "Plan approved from Limit Island"
+        )
     }
 
+    /// "No, keep planning" — with or without something to add. The feedback is what
+    /// the CLI reports back to the agent as the reason it may not build yet, so an
+    /// empty one still has to say something the agent can act on.
     func requestPlanChanges(_ feedback: String) {
         guard !isTooSoon else { return reject("request plan changes") }
-        finish(.init(decision: .deny), feedback)
+        let trimmed = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        finish(.init(decision: .deny), trimmed.isEmpty ? "Keep planning. The plan was not approved." : trimmed)
     }
 
     /// Hands the decision back to the CLI's own prompt. Used on timeout, on quit,

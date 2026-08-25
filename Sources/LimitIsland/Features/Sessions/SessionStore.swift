@@ -32,6 +32,15 @@ final class SessionStore {
     private(set) var sessions: [AgentSession] = []
     private(set) var pending: [PendingRequest] = []
     private(set) var codexQuestions: [String: CodexQuestionState] = [:]
+
+    /// Questions this session already raised as a card from Codex's `PreToolUse`
+    /// hook, so the transcript watcher does not raise them a second time.
+    ///
+    /// Kept per session and cleared when the turn ends. It is a small list by
+    /// construction — a turn asks a question or two — and capped anyway, because a
+    /// session that loops asking must not grow this without bound.
+    private var codexHookQuestions: [String: [AgentQuestion]] = [:]
+    private static let codexHookQuestionMemory = 8
     /// Bumped once a second so `elapsed` strings stay honest.
     private(set) var tick: Int = 0
 
@@ -54,6 +63,51 @@ final class SessionStore {
 
     private var housekeeping: Task<Void, Never>?
     private var livenessTicks = 0
+
+    /// The plan each session was last shown a card for.
+    ///
+    /// `ExitPlanMode` is offered to us twice — once as `PreToolUse`, once as
+    /// `PermissionRequest` — and the person must read a plan once, not twice. Keyed on
+    /// the plan's own text rather than the session, because an agent told to keep
+    /// planning comes straight back with a *different* plan, and that one is a new
+    /// question.
+    private var plansShown: [String: String] = [:]
+
+    /// Sessions where the person approved a plan with "auto approve".
+    ///
+    /// Answering the hook with a mode switch only works if the CLI honours it, and
+    /// that cannot be relied on across versions. Remembering the choice here makes
+    /// the promise ours to keep: edits from this session are allowed without a card
+    /// until it ends or plans again, which is what accept-edits means.
+    private(set) var autoApprovedPlans: Set<String> = []
+
+    /// Where a session has got to in the handover from "auto approve" to the CLI's
+    /// own permission mode.
+    ///
+    /// The switch cannot travel with the approval itself. `ExitPlanMode` is answered
+    /// on `PreToolUse`, whose reply has no field for a permission mode at all, and
+    /// even if it did, the tool ends by setting the session's mode to whatever
+    /// preceded plan mode — so anything sent before it runs is overwritten. The next
+    /// `PermissionRequest` is the first moment a switch survives.
+    ///
+    /// Two states rather than a flag because sending a switch is not the same as
+    /// having made one: only the mode reported by a later event settles that, and a
+    /// session that never reports the mode back is one whose promise is still ours.
+    private enum ModeHandover: Equatable {
+        case owed(String)
+        case sent(String)
+    }
+    private var modeHandovers: [String: ModeHandover] = [:]
+
+    /// How many edits may be handed back to the terminal while waiting for the one
+    /// event that can carry a mode switch.
+    ///
+    /// The wait has to be bounded. A `PermissionRequest` only fires when the CLI is
+    /// about to ask, so a session whose edits are already covered by the person's own
+    /// allow-rules never produces one — and an unbounded wait would defer every edit
+    /// forever, which is neither the switch nor the promise the button made.
+    private static let maxEditsDeferredForSwitch = 1
+    private var editsDeferredForSwitch: [String: Int] = [:]
 
     init() {
         approvalMatcher = UserDefaults.standard.string(forKey: DefaultsKey.matcher) ?? Self.defaultMatcher
@@ -88,6 +142,13 @@ final class SessionStore {
 
     /// Handles one hook event and produces the CLI's answer.
     func handle(_ event: HookEvent) async -> (HookReply, String?) {
+        // The trace that answers "are the hooks even reaching the app?". Nothing of
+        // what the person is doing: the CLI, the event, and whether it identified a
+        // session — which is the whole of what deciding to show a row depends on.
+        Log.hooks.debug("""
+            \(event.cli, privacy: .public) \(event.event, privacy: .public) \
+            \(event.sessionID == nil ? "without a session id" : "for a session", privacy: .public)
+            """)
         // Codex's `notify` arrives before the session-id guard: its payload has no
         // session id of the kind Claude Code sends, and the row it belongs to was
         // created from the transcript, not from here.
@@ -107,7 +168,25 @@ final class SessionStore {
             return (.noOpinion, nil)
         }
 
-        guard let sessionID = event.sessionID else { return (.noOpinion, nil) }
+        guard let sessionID = event.sessionID else {
+            if event.provider == .gemini {
+                // The one failure that would leave the island silent while the hooks
+                // are demonstrably firing. Name the keys rather than the payload:
+                // enough to see a renamed field, nothing of what the person is doing.
+                Log.hooks.debug("""
+                    gemini \(event.event, privacy: .public) has no conversation id; \
+                    keys: \(event.payload.objectValue?.keys.sorted().joined(separator: ",") ?? "none", privacy: .public)
+                    """)
+            }
+            return (.noOpinion, nil)
+        }
+        // Antigravity's hooks are global — the CLI, the IDE and the desktop app read
+        // the same file, and it runs internal conversations of its own. A workspace
+        // is what makes an event a session someone is sitting in front of, so an
+        // event without one may update a row we already know but never open one.
+        if event.provider == .gemini, event.workingDirectory == nil, session(id: sessionID) == nil {
+            return (.noOpinion, nil)
+        }
         touch(event, id: sessionID)
 
         // Mode-bearing hooks are also how Claude tells us someone changed modes
@@ -116,11 +195,25 @@ final class SessionStore {
         if event.permissionMode.isAutomatic {
             allowPendingForAutoMode(sessionID: sessionID)
         }
+        if let reported = event.reportedPermissionMode {
+            reconcileModeHandover(reported, sessionID: sessionID)
+        }
 
         switch event.event {
         case "SessionStart":
             update(sessionID) { $0.activity = .starting }
+            readClaudeModel(event, sessionID: sessionID)
+        // Antigravity has no session-start event: the first thing a turn does is
+        // call the model, and that is where a Gemini row begins. `PostInvocation`
+        // is a continuation hint rather than a state change, so it only touches.
+        case "PreInvocation":
+            update(sessionID) { $0.activity = .thinking }
+            readGeminiPrompt(sessionID: sessionID)
+        case "PostInvocation":
+            break
         case "UserPromptSubmit":
+            // A new instruction ends the plan that was answered under the old one.
+            plansShown[sessionID] = nil
             update(sessionID) {
                 if let prompt = event.prompt { $0.lastPrompt = prompt }
                 $0.activity = .thinking
@@ -150,21 +243,96 @@ final class SessionStore {
             }
         case "Stop", "SubagentStop":
             update(sessionID) { $0.activity = .done }
+            readClaudeModel(event, sessionID: sessionID)
         case "SessionEnd":
             resolvePending(sessionID: sessionID, tool: nil)
             sessions.removeAll { $0.id == sessionID }
             codexQuestions[sessionID] = nil
+            codexHookQuestions[sessionID] = nil
+            plansShown[sessionID] = nil
+            autoApprovedPlans.remove(sessionID)
+            modeHandovers[sessionID] = nil
+            editsDeferredForSwitch[sessionID] = nil
         default:
             break
         }
         return (.noOpinion, nil)
     }
 
+    /// Reads the model out of a Claude session's transcript.
+    ///
+    /// Claude Code's hook payloads name the transcript but not the model, and the
+    /// transcript names the model on every assistant turn. Called only at the two
+    /// ends of a turn — a tool loop can fire ten `PreToolUse` events a second, and
+    /// none of them would say anything a file read at the end does not.
+    private func readClaudeModel(_ event: HookEvent, sessionID: String) {
+        guard event.provider == .claude, let path = event.transcriptPath else { return }
+        Task.detached(priority: .utility) {
+            guard let model = ClaudeTranscriptAdopter.model(atPath: path) else { return }
+            await MainActor.run { [weak self] in
+                self?.update(sessionID) { $0.model = model }
+            }
+        }
+    }
+
+    /// Titles a Gemini row with what the person actually asked for.
+    ///
+    /// Read at the start of a turn, which is the one moment a new prompt exists and
+    /// the only Antigravity event that follows one — see `GeminiHistoryReader` for
+    /// why the prompt has to be fetched rather than delivered.
+    private func readGeminiPrompt(sessionID: String) {
+        Task.detached(priority: .utility) {
+            guard let prompt = GeminiHistoryReader.lastPrompt(conversationID: sessionID) else { return }
+            await MainActor.run { [weak self] in
+                self?.update(sessionID) { $0.lastPrompt = prompt }
+            }
+        }
+    }
+
+    /// Checks what the CLI actually did with a mode switch we sent.
+    ///
+    /// There is nothing to ask for a second time. Accept-edits is not gated the way
+    /// Claude's own `auto` is, so a session reading back `default` after we set it has
+    /// refused something it had no documented reason to refuse — worth a log line, not
+    /// a retry ladder. The promise then stays ours to keep through `autoApprovedPlans`,
+    /// and the worst case is the behaviour that shipped before any of this existed.
+    ///
+    /// Takes a mode the event actually reported. An event that carried no mode at all
+    /// must not be read as a refusal — see `HookEvent.reportedPermissionMode`.
+    private func reconcileModeHandover(_ mode: PermissionMode, sessionID: String) {
+        guard case let .sent(requested) = modeHandovers[sessionID] else { return }
+        modeHandovers[sessionID] = nil
+        switch mode {
+        case .auto, .acceptEdits, .bypass:
+            break
+        case .standard, .plan:
+            Log.hooks.info("""
+                \(sessionID, privacy: .public) did not take \(requested, privacy: .public); \
+                keeping the plan's promise in the app instead
+                """)
+        }
+    }
+
     private func handlePreToolUse(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
         guard let tool = event.toolName else { return (.noOpinion, nil) }
         update(sessionID) { $0.activity = .running(ToolSummary.activity(tool: tool, input: event.toolInput)) }
 
-        if tool == "ExitPlanMode" { return (.noOpinion, nil) }
+        // A plan is not a tool permission: the user's allow-rules and the approval
+        // matcher have no say in whether they get to read it, so this branch comes
+        // before both. `PreToolUse` is also the earlier of the two events the CLI
+        // offers it on, and the only one every build is known to send.
+        if tool == "ExitPlanMode" {
+            let plan = event.toolInput?.string("plan") ?? ""
+            guard event.permissionMode.asksAbout(tool), plansShown[sessionID] != plan else {
+                return (.noOpinion, nil)
+            }
+            plansShown[sessionID] = plan
+            // Planning again replaces the answer given to the previous plan.
+            autoApprovedPlans.remove(sessionID)
+            modeHandovers[sessionID] = nil
+            editsDeferredForSwitch[sessionID] = nil
+            return await decide(event, sessionID: sessionID, tool: tool)
+        }
 
         // AskUserQuestion does not require Claude's normal permission prompt, but
         // its PreToolUse hook can still block and return the completed answers.
@@ -172,7 +340,25 @@ final class SessionStore {
             return await decide(event, sessionID: sessionID, tool: tool)
         }
 
-        guard shouldIntercept(tool: tool) else { return (.noOpinion, nil) }
+        // Codex's question tool. Deliberately not behind `asksAbout`: a permission
+        // mode says how much the person wants to be *asked to approve things*, and
+        // a question is not an approval — nobody turns on auto-accept meaning "answer
+        // my questions for me". Deferring here would just move the same question to
+        // the terminal.
+        if tool == "request_user_input", let question = AgentQuestion.parse(event.toolInput) {
+            // A credential must not be typed into a floating panel or written into a
+            // hook reason, and the reason is logged. Codex's own prompt takes it.
+            guard !question.items.contains(where: \.isSecret) else {
+                update(sessionID) { $0.activity = .waitingInTerminal("Waiting for a secret in the terminal") }
+                return (.noOpinion, nil)
+            }
+            var seen = codexHookQuestions[sessionID, default: []]
+            seen.append(question)
+            codexHookQuestions[sessionID] = seen.suffix(Self.codexHookQuestionMemory)
+            return await decide(event, sessionID: sessionID, tool: tool)
+        }
+
+        guard shouldIntercept(tool: tool, provider: event.provider) else { return (.noOpinion, nil) }
 
         // Auto-accept and bypass mean the person has already answered. Showing a
         // card there would put back exactly the interruption they turned off — so
@@ -181,6 +367,29 @@ final class SessionStore {
         guard mode.asksAbout(tool) else {
             Log.hooks.debug("\(tool, privacy: .public) not intercepted: session is in \(String(describing: mode), privacy: .public)")
             return (.noOpinion, nil)
+        }
+
+        // The person approved this session's plan with "auto approve", so the edits
+        // that plan described are already answered. Asking again per file would put
+        // back the interruption they just turned off. Deliberately only the edit
+        // tools — that is what accept-edits means, and a command is not an edit.
+        if autoApprovedPlans.contains(sessionID), PermissionMode.editTools.contains(tool) {
+            // Standing down on purpose while a mode switch is owed. Answering `allow`
+            // here settles this one edit and ends the turn — the CLI never runs its
+            // permission flow, so the `PermissionRequest` that can carry the switch
+            // never fires, and every later edit costs another card. Deferring once
+            // buys the switch that makes all of them unnecessary.
+            //
+            // Only for as long as that trade can pay off, though: an edit the person's
+            // own rules already allow produces no permission flow to wait for, and a
+            // session that never asks would otherwise defer every edit for the rest of
+            // its life. Past the bound, the plan's promise is answered here.
+            if case .owed = modeHandovers[sessionID],
+               editsDeferredForSwitch[sessionID, default: 0] < Self.maxEditsDeferredForSwitch {
+                editsDeferredForSwitch[sessionID, default: 0] += 1
+                return (.noOpinion, nil)
+            }
+            return (.init(decision: .allow), "Auto-approved by the plan you accepted")
         }
 
         // The user's own rules come first. A call they have already allowlisted
@@ -204,10 +413,29 @@ final class SessionStore {
         return await decide(event, sessionID: sessionID, tool: tool)
     }
 
-    private func shouldIntercept(tool: String) -> Bool {
-        // Only Claude Code can be answered through its hook; the others report.
+    private func shouldIntercept(tool: String, provider: Provider = .claude) -> Bool {
         guard !approvalMatcher.isEmpty else { return false }
-        return approvalMatcher.split(separator: "|").contains { $0.trimmingCharacters(in: .whitespaces) == tool }
+        let asked = Self.matcherName(for: tool, provider: provider)
+        return approvalMatcher.split(separator: "|").contains { $0.trimmingCharacters(in: .whitespaces) == asked }
+    }
+
+    /// The name the approval list is written in.
+    ///
+    /// The list is one setting, typed once, in Claude Code's vocabulary. Antigravity
+    /// calls the same three things `run_command`, `edit_file` and `write_to_file`, so
+    /// its tools are asked about under the Claude name rather than making a person
+    /// keep two lists in step. Anything without an equivalent is passed through
+    /// untranslated and can be named literally.
+    static func matcherName(for tool: String, provider: Provider) -> String {
+        guard provider == .gemini else { return tool }
+        switch tool {
+        case "run_command", "shell_exec", "send_command_input": return "Bash"
+        case "edit_file", "propose_code", "file_change", "replace_file_content": return "Edit"
+        case "write_to_file", "write_blob", "create_file": return "Write"
+        case "edit_notebook": return "NotebookEdit"
+        case "read_url_content", "open_browser_url": return "WebFetch"
+        default: return tool
+        }
     }
 
     private func decide(_ event: HookEvent, sessionID: String, tool: String) async -> (HookReply, String?) {
@@ -257,7 +485,17 @@ final class SessionStore {
     func apply(_ update: CodexSessionWatcher.Update) {
         let id = update.sessionID
 
-        switch update.record {
+        // Applied after the record, so a line that both opens a session and names
+        // its model lands on the row the record just created. Never creates a row
+        // itself: a model says which model a session would use, not that one exists.
+        defer {
+            if let model = update.model {
+                self.update(id) { $0.model = model }
+            }
+        }
+
+        guard let record = update.record else { return }
+        switch record {
         case let .started(_, directory, source):
             guard source != .subagent else { return }
             insertIfNeeded(id, provider: .openAI, directory: directory ?? update.workingDirectory)
@@ -274,6 +512,7 @@ final class SessionStore {
             self.update(id) { $0.activity = .thinking }
         case .turnCompleted:
             codexQuestions[id] = nil
+            codexHookQuestions[id] = nil
             self.update(id) { $0.activity = .done }
         case let .activity(what):
             codexQuestions[id] = nil
@@ -281,6 +520,12 @@ final class SessionStore {
             self.update(id) { $0.activity = .running(what) }
         case let .question(question):
             insertIfNeeded(id, provider: .openAI, directory: update.workingDirectory)
+            // The hook already put this question on screen, and Codex writes the call
+            // into its transcript either way — including after the card was answered
+            // and taken down. Without this the watcher raises the same question a
+            // second time, moments after it was dealt with, which is exactly what
+            // "I answered it and it asked again" looks like from the outside.
+            guard !codexHookQuestions[id, default: []].contains(question) else { break }
             codexQuestions[id] = CodexQuestionState(question: question, receivedAt: .now)
             self.update(id) { $0.activity = .waitingInTerminal(question.items.first?.question ?? "Codex is waiting") }
         case .functionAnswered:
@@ -299,7 +544,34 @@ final class SessionStore {
     private func handlePermission(_ event: HookEvent, sessionID: String) async -> (HookReply, String?) {
         guard let tool = event.toolName else { return (.noOpinion, nil) }
         if event.provider == .claude {
+            // The first request after an auto-approved plan is where the promise is
+            // actually kept. `ExitPlanMode` has finished by now and has already set
+            // the session's mode, so this switch is the first one that is not
+            // immediately overwritten.
+            //
+            // Cleared on the attempt rather than on success: a build that never sends
+            // this event should cost one terminal prompt, not a session that defers
+            // every edit forever waiting for a switch it will never get to send.
+            if case let .owed(mode) = modeHandovers[sessionID] {
+                modeHandovers[sessionID] = .sent(mode)
+                Log.hooks.info("""
+                    switching \(sessionID, privacy: .public) to \(mode, privacy: .public)
+                    """)
+                return (
+                    .init(decision: .allow, updatedPermissionMode: mode),
+                    "Auto-approved by the plan you accepted"
+                )
+            }
+
+            // The backstop for the `PreToolUse` route above: it runs when that event
+            // decided nothing, and stands down when it already did.
             guard tool == "ExitPlanMode" else { return (.noOpinion, nil) }
+            let plan = event.toolInput?.string("plan") ?? ""
+            guard plansShown[sessionID] != plan else { return (.noOpinion, nil) }
+            plansShown[sessionID] = plan
+            autoApprovedPlans.remove(sessionID)
+            modeHandovers[sessionID] = nil
+            editsDeferredForSwitch[sessionID] = nil
             return await decide(event, sessionID: sessionID, tool: tool)
         }
         // Newer Codex/Sol hook payloads carry the policy directly. Honour it even
@@ -387,7 +659,7 @@ final class SessionStore {
     private func discoverCodexTerminal(for id: String, directory: String?) {
         guard let directory else { return }
         Task.detached {
-            let terminal = TerminalDiscovery.codex(in: directory)
+            let terminal = TerminalDiscovery.cli(named: "codex", in: directory)
             await MainActor.run { [weak self] in
                 guard let self, let terminal,
                       let index = self.sessions.firstIndex(where: { $0.id == id }),
@@ -395,6 +667,44 @@ final class SessionStore {
                 self.sessions[index].terminal = terminal
                 self.coalesceSessions(preferredID: id)
             }
+        }
+    }
+
+    /// Adds the agents that were already running when the app launched. Anything a
+    /// hook already told us about — by id, or by being the same process in the same
+    /// terminal under a new id — is left alone: a hook-fed row is live and can be
+    /// answered, and this one could only ever be neither.
+    func adopt(_ adopted: [AdoptedSession]) {
+        // The answer to "why is my session not in the list?" — said once, at launch,
+        // naming the CLIs rather than the projects.
+        Log.hooks.info("""
+            adopting \(adopted.count) session(s) already running: \
+            \(adopted.map { $0.provider.title }.sorted().joined(separator: ", "), privacy: .public)
+            """)
+        for candidate in adopted where !isKnown(candidate) {
+            sessions.append(AgentSession(
+                id: candidate.sessionID,
+                provider: candidate.provider,
+                project: (candidate.directory as NSString).lastPathComponent,
+                lastPrompt: candidate.lastPrompt,
+                model: candidate.model,
+                // Between turns is the only state a transcript can prove: it is
+                // written as work happens, so nothing is being waited on.
+                activity: .done,
+                terminal: candidate.terminal,
+                isAdopted: true,
+                startedAt: candidate.startedAt,
+                lastEventAt: candidate.lastEventAt
+            ))
+        }
+        reorder()
+    }
+
+    private func isKnown(_ candidate: AdoptedSession) -> Bool {
+        sessions.contains {
+            if $0.id == candidate.sessionID { return true }
+            guard let identity = candidate.terminal.stableIdentity else { return false }
+            return $0.terminal?.stableIdentity == identity
         }
     }
 
@@ -406,6 +716,7 @@ final class SessionStore {
         resolvePending(sessionID: sessionID, tool: nil)
         sessions.removeAll { $0.id == sessionID }
         codexQuestions[sessionID] = nil
+        codexHookQuestions[sessionID] = nil
     }
 
     func session(id: String) -> AgentSession? {
@@ -439,12 +750,28 @@ final class SessionStore {
 
     func approvePlan(_ request: PendingRequest, automatic: Bool) {
         request.approvePlan(automatic: automatic)
+        guard request.isResolved else { return }
+        if automatic {
+            autoApprovedPlans.insert(request.sessionID)
+            modeHandovers[request.sessionID] = .owed(PermissionMode.autoApprove)
+            editsDeferredForSwitch[request.sessionID] = 0
+        }
+        Log.hooks.info("""
+            approved plan for \(request.sessionID, privacy: .public) \
+            \(automatic ? "with auto-accepted edits" : "with edits still asking", privacy: .public)
+            """)
         removeResolved(request)
     }
 
     func requestPlanChanges(_ request: PendingRequest, feedback: String) {
         request.requestPlanChanges(feedback)
         removeResolved(request)
+    }
+
+    /// Whether this session is running under a plan the person auto-approved. Read by
+    /// the row, so a session answering its own edits says so rather than looking idle.
+    func isAutoApproved(sessionID: String) -> Bool {
+        autoApprovedPlans.contains(sessionID)
     }
 
     private func removeResolved(_ request: PendingRequest) {
@@ -483,12 +810,17 @@ final class SessionStore {
         let terminal = TerminalDiscovery.enriched(TerminalRef(event: event))
         if let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].lastEventAt = .now
+            // Whatever this row was found by, it is talking to us now.
+            sessions[index].isAdopted = false
             // The terminal is re-sent on every event, which is what keeps a session
             // resumed in a different window pointing at the right one.
             if !terminal.pids.isEmpty { sessions[index].terminal = terminal }
             if let directory = event.workingDirectory {
                 sessions[index].project = (directory as NSString).lastPathComponent
             }
+            // Antigravity sends the model on every payload; a session switched
+            // mid-flight says so on its next event.
+            if let model = event.model { sessions[index].model = model }
             reorder()
             // Only with a live PID in hand: the weaker pane and TTY identities are
             // for restored Codex rows, and a hook-fed session that fell back to one
@@ -502,6 +834,7 @@ final class SessionStore {
                 provider: event.provider,
                 project: event.workingDirectory.map { ($0 as NSString).lastPathComponent },
                 lastPrompt: event.prompt,
+                model: event.model,
                 activity: .starting,
                 terminal: terminal,
                 startedAt: .now,

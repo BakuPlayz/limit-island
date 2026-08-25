@@ -3,16 +3,22 @@ import Carbon
 import Combine
 import SwiftUI
 
-/// A panel that will not take key or main status under any circumstances.
+/// A panel that takes key status only while it is asking to be typed into.
 ///
 /// `NSPanel` differs from `NSWindow` here: a borderless `NSWindow` refuses key
 /// status, but a borderless `NSPanel` accepts it — which is what makes
 /// Spotlight-style panels possible, and what let SwiftUI put keyboard focus on the
 /// first control inside the permission card. A focused control can be fired by
 /// Return or Space, so a permission request could be answered by a keystroke aimed
-/// at something else entirely.
+/// at something else entirely. Hence the default of `false`.
+///
+/// `allowsKey` is raised only while a card is showing a text field, and every other
+/// control on that card is disabled for exactly as long — so there is nothing a
+/// stray Return could fire. It is never left raised: see
+/// `IslandWindowController.syncTextEntry`.
 private final class NeverKeyPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 }
 
@@ -34,15 +40,18 @@ private final class NeverKeyPanel: NSPanel {
 ///   touch the window inline. They record intent and let a `Task` reach `position()`
 ///   on a later turn, once AppKit has finished laying out.
 ///
-/// The panel is non-activating and, since a card once answered itself, explicitly
-/// never key. That is what lets someone answer a permission request without their
-/// editor losing focus. Nothing here may call `makeKeyAndOrderFront`; see
-/// `handleHotKey` for how shortcuts reach a window that is never key.
+/// The panel is non-activating and, since a card once answered itself, refuses key
+/// status. That is what lets someone answer a permission request without their editor
+/// losing focus, and why `handleHotKey` exists: shortcuts reach a window that is not
+/// key. The single exception is typing — macOS delivers keystrokes only to the active
+/// application — so `syncTextEntry` lends the panel focus while a text field is on
+/// screen and hands it straight back to whichever app had it.
 @MainActor
 final class IslandWindowController: NSObject {
     private let quota: QuotaStore
     private let sessions: SessionStore
     private let codexReset: CodexResetStore
+    private let autoContinue: AutoContinueStore
     private let presenter = IslandPresenter()
     private let panel = IslandWindowController.makePanel()
     private var cancellables = Set<AnyCancellable>()
@@ -62,11 +71,18 @@ final class IslandWindowController: NSObject {
     private var hotKeys: [EventHotKeyRef?] = []
     /// Installed only while the panel is open, so a click anywhere else closes it.
     private var outsideClickMonitor: Any?
+    /// Whichever application was frontmost when a composer opened, so typing an
+    /// answer costs the person their insertion point only for as long as they type.
+    private var applicationBeforeTextEntry: NSRunningApplication?
 
-    init(quota: QuotaStore, sessions: SessionStore, codexReset: CodexResetStore) {
+    init(
+        quota: QuotaStore, sessions: SessionStore, codexReset: CodexResetStore,
+        autoContinue: AutoContinueStore
+    ) {
         self.quota = quota
         self.sessions = sessions
         self.codexReset = codexReset
+        self.autoContinue = autoContinue
         super.init()
 
         presenter.refreshHookState()
@@ -77,6 +93,7 @@ final class IslandWindowController: NSObject {
             quota: quota,
             sessions: sessions,
             codexReset: codexReset,
+            autoContinue: autoContinue,
             presenter: presenter,
             onToggle: { [weak self] in self?.toggle() },
             onJump: { [weak self] session in
@@ -87,6 +104,7 @@ final class IslandWindowController: NSObject {
         // Not a Combine publisher like the quota stores: this one is `@Observable`,
         // which SwiftUI follows on its own but the window frame does not.
         codexReset.onChange = { [weak self] in self?.position() }
+        autoContinue.onChange = { [weak self] in self?.position() }
 
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.position() }
@@ -114,11 +132,23 @@ final class IslandWindowController: NSObject {
         installKeyMonitor()
     }
 
+    /// The island gets out of the way on the click, not on the answer. Resolving a
+    /// terminal means several subprocesses, and waiting for them before closing is
+    /// what made a click feel late; the sheets below re-open the panel in the rare
+    /// case the jump needs something from the person.
     private func handleJump(_ session: AgentSession) {
-        switch TerminalJumper.jump(to: session) {
+        presenter.jumpSheet = nil
+        collapse()
+        Task { @MainActor [weak self] in
+            let resolution = await TerminalJumper.jump(to: session)
+            self?.finishJump(resolution, for: session)
+        }
+    }
+
+    private func finishJump(_ resolution: JumpResolution, for session: AgentSession) {
+        switch resolution {
         case .jumped:
             presenter.jumpSheet = nil
-            collapse()
         case let .choose(destinations):
             presenter.jumpSheet = .chooser(sessionID: session.id, destinations: destinations)
             setOpen(true)
@@ -130,7 +160,6 @@ final class IslandWindowController: NSObject {
             setOpen(true)
         case .applicationFallback:
             presenter.jumpSheet = nil
-            collapse()
         case .stale:
             // Navigation failure is not session lifecycle. Keep the idle row even
             // when neither a tab nor an application can currently be resolved.
@@ -170,12 +199,40 @@ final class IslandWindowController: NSObject {
             _ = sessions.codexQuestions.count
             _ = presenter.jumpSheet
             _ = presenter.interactionHeight
+            _ = presenter.isComposing
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.position()
                 self?.syncHotKeys()
+                self?.syncTextEntry()
                 self?.observeSessions()
             }
+        }
+    }
+
+    /// Lends the panel keyboard focus while a card is showing a text field, and takes
+    /// it back the moment the field goes away — including when the interaction times
+    /// out from underneath it, since that also clears `isComposing`.
+    ///
+    /// macOS delivers key events only to the active application, so there is no
+    /// version of typing here that does not briefly take focus. What this does that
+    /// the modal dialog it replaced never did is give it back.
+    private func syncTextEntry() {
+        let composing = presenter.isComposing
+        guard composing != panel.allowsKey else { return }
+        if composing {
+            applicationBeforeTextEntry = NSWorkspace.shared.frontmostApplication
+            panel.allowsKey = true
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKey()
+        } else {
+            panel.allowsKey = false
+            panel.resignKey()
+            if let previous = applicationBeforeTextEntry, !previous.isTerminated,
+               previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previous.activate()
+            }
+            applicationBeforeTextEntry = nil
         }
     }
 
@@ -344,11 +401,34 @@ final class IslandWindowController: NSObject {
             guard sessions.activeInteraction == nil else { return 0 }
             // The reset banner is a row of the same height, and the list keeps its
             // empty-state row underneath it.
-            guard codexReset.shouldPrompt(hasCodexAccount: quota.hasCodexAccount) else {
-                return sessions.sessions.count
-            }
-            return max(sessions.sessions.count, 1) + 1
+            var rows = max(sessions.sessions.count, 1)
+            var extra = 0
+            if codexReset.shouldPrompt(hasCodexAccount: quota.hasCodexAccount) { extra += 1 }
+            // The auto-continue card is taller than a row: an offer carries a
+            // picker, two actions and the cost note, and an armed or finished one
+            // is a single row's worth of text.
+            extra += autoContinueRows
+            guard extra > 0 else { return sessions.sessions.count }
+            rows += extra
+            return rows
         }
+    }
+
+    /// How many `rowHeight` units the auto-continue card needs, or zero when it is
+    /// not showing. It has to agree with `IslandPanel.showsAutoContinue` — the panel
+    /// decides what to draw and this decides what to leave room for, and a
+    /// disagreement is a card clipped by its own window.
+    private var autoContinueRows: Int {
+        guard sessions.activeInteraction == nil, presenter.jumpSheet == nil else { return 0 }
+        let claudeSessions = sessions.sessions.filter { $0.provider == .claude && $0.terminal != nil }
+        if autoContinue.scheduled != nil || autoContinue.lastOutcome != nil {
+            return AutoContinueCard.rowBudget(sessionCount: claudeSessions.count, isArmed: true)
+        }
+        guard autoContinue.shouldOffer(
+            drainedResetAt: quota.drainedClaudeWindow?.resetAt,
+            hasClaudeSession: !claudeSessions.isEmpty
+        ) else { return 0 }
+        return AutoContinueCard.rowBudget(sessionCount: claudeSessions.count, isArmed: false)
     }
 
     /// Sets the presentation and the frame. Never builds a view: the hosting view
@@ -447,8 +527,15 @@ final class IslandWindowController: NSObject {
 
         switch id {
         case 1:
-            Log.hooks.debug("shortcut: allow")
-            sessions.allow(request)
+            // On a plan card the primary chord means the primary row: approving a plan
+            // is always a choice of build mode, never a bare allow.
+            if case .plan = request.kind {
+                Log.hooks.debug("shortcut: approve plan (auto)")
+                sessions.approvePlan(request, automatic: true)
+            } else {
+                Log.hooks.debug("shortcut: allow")
+                sessions.allow(request)
+            }
         case 2:
             Log.hooks.debug("shortcut: deny")
             sessions.deny(request)
@@ -459,7 +546,7 @@ final class IslandWindowController: NSObject {
 
     // MARK: - Window
 
-    private static func makePanel() -> NSPanel {
+    private static func makePanel() -> NeverKeyPanel {
         let panel = NeverKeyPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
